@@ -1,4 +1,4 @@
-import { Plugin, ItemView, WorkspaceLeaf, Notice, setIcon, MarkdownView, Editor, PluginSettingTab, Setting, App, TFile, Modal, TFolder, normalizePath, AbstractInputSuggest } from 'obsidian';
+import { Plugin, ItemView, WorkspaceLeaf, Notice, setIcon, MarkdownView, Editor, PluginSettingTab, Setting, App, TFile, Modal, TFolder, normalizePath, AbstractInputSuggest, requestUrl } from 'obsidian';
 import { ViewPlugin, Decoration, WidgetType, DecorationSet, ViewUpdate, EditorView } from '@codemirror/view';
 import { RangeSetBuilder, EditorState } from '@codemirror/state';
 import { python } from '@codemirror/lang-python';
@@ -20,6 +20,7 @@ export interface PyDataSettings {
     requestedPackages: string[];
     autoloadPackages: string[];
     language: string;
+    githubToken?: string;
     imageSaveMode: 'base64' | 'folder' | 'root' | 'ask';
     imageFolderPath: string;
 }
@@ -28,6 +29,7 @@ const DEFAULT_SETTINGS: PyDataSettings = {
     requestedPackages: [],
     autoloadPackages: [],
     language: 'en',
+    githubToken: undefined,
     imageSaveMode: 'base64',
     imageFolderPath: ''
 };
@@ -39,6 +41,313 @@ declare global {
         require: any;
         process: any;
         module: any;
+    }
+}
+
+// --- PYODIDE WEB WORKER MANAGER ---
+// Runs Python in a separate thread to keep UI responsive
+class PyodideWorkerManager {
+    private worker: Worker | null = null;
+    private pendingRequests: Map<string, { resolve: (value: any) => void, reject: (reason?: any) => void }> = new Map();
+    private requestId = 0;
+    private workerReady = false;
+    private initPromise: Promise<void> | null = null;
+    private pluginPath: string;
+
+    constructor(pluginPath: string) {
+        this.pluginPath = pluginPath;
+    }
+
+    private generateId(): string {
+        return `req_${++this.requestId}_${Date.now()}`;
+    }
+
+    async initialize(packages: string[] = [], autoloadPackages: string[] = []): Promise<{ success: boolean, message?: string, error?: string }> {
+        if (this.workerReady) {
+            return { success: true, message: 'Already initialized' };
+        }
+
+        if (this.initPromise) {
+            await this.initPromise;
+            return { success: true };
+        }
+
+        this.initPromise = (async () => {
+            try {
+                // Create worker from blob URL (works in Obsidian's context)
+                const workerCode = await this.getWorkerCode();
+                const blob = new Blob([workerCode], { type: 'application/javascript' });
+                const workerUrl = URL.createObjectURL(blob);
+                
+                this.worker = new Worker(workerUrl);
+                
+                // Wait for worker to be ready
+                await new Promise<void>((resolve, reject) => {
+                    const timeout = setTimeout(() => reject(new Error('Worker init timeout')), 30000);
+                    
+                    const onMessage = (e: MessageEvent) => {
+                        if (e.data.type === 'ready') {
+                            clearTimeout(timeout);
+                            this.worker?.removeEventListener('message', onMessage);
+                            resolve();
+                        }
+                    };
+                    this.worker!.addEventListener('message', onMessage);
+                    this.worker!.addEventListener('error', (e) => {
+                        clearTimeout(timeout);
+                        reject(e);
+                    });
+                });
+
+                // Set up message handler for responses
+                this.worker.onmessage = (e: MessageEvent) => {
+                    const { id, result } = e.data;
+                    if (id && this.pendingRequests.has(id)) {
+                        const { resolve } = this.pendingRequests.get(id)!;
+                        this.pendingRequests.delete(id);
+                        resolve(result);
+                    }
+                };
+
+                this.worker.onerror = (e) => {
+                    console.error('PyodideWorker error:', e);
+                };
+
+                // Initialize Pyodide in the worker
+                const initResult = await this.sendMessage('init', { packages, autoloadPackages });
+                if (initResult.success) {
+                    this.workerReady = true;
+                }
+                return initResult;
+            } catch (e) {
+                console.error('Failed to initialize worker:', e);
+                throw e;
+            }
+        })();
+
+        await this.initPromise;
+        return { success: this.workerReady };
+    }
+
+    private async getWorkerCode(): Promise<string> {
+        // Inline worker code to avoid file loading issues in Obsidian
+        const PYODIDE_VERSION = 'v0.23.4';
+        const PYODIDE_BASE = `https://cdn.jsdelivr.net/pyodide/${PYODIDE_VERSION}/full/`;
+        
+        return `
+const PYODIDE_VERSION = '${PYODIDE_VERSION}';
+const PYODIDE_BASE = '${PYODIDE_BASE}';
+
+let pyodide = null;
+let pyodideReady = false;
+
+importScripts(PYODIDE_BASE + 'pyodide.js');
+
+async function initPyodide(packages, autoloadPackages) {
+    if (pyodideReady) return { success: true, message: 'Already initialized' };
+    
+    try {
+        pyodide = await loadPyodide({ indexURL: PYODIDE_BASE });
+        await pyodide.loadPackage(['numpy', 'pandas', 'matplotlib', 'scikit-learn', 'micropip', 'pyodide-http']);
+        
+        await pyodide.runPythonAsync(\`
+            import micropip
+            try: await micropip.install("seaborn")
+            except: pass
+            import pyodide_http
+            pyodide_http.patch_all()
+        \`);
+        
+        const allPkgs = [...new Set([...(packages || []), ...(autoloadPackages || [])])];
+        if (allPkgs.length > 0) {
+            const pkgsStr = allPkgs.map(p => '"' + p + '"').join(', ');
+            await pyodide.runPythonAsync(\`
+                import micropip
+                try:
+                    await micropip.install([\${pkgsStr}])
+                except Exception as e:
+                    print(f"Error auto-loading packages: {str(e)}")
+            \`);
+        }
+        
+        pyodideReady = true;
+        return { success: true, message: 'Pyodide initialized' };
+    } catch (e) {
+        return { success: false, error: e.toString() };
+    }
+}
+
+async function executePython(code, wrap) {
+    if (!pyodideReady) {
+        return { text: '', image: null, error: 'Pyodide not initialized' };
+    }
+    
+    try {
+        let stdout = '';
+        let stderr = '';
+        
+        pyodide.setStdout({ batched: (str) => stdout += str + '\\n' });
+        pyodide.setStderr({ batched: (str) => stderr += str + '\\n' });
+        
+        let finalCode = code;
+        if (wrap !== false) {
+            finalCode = \`
+import io, base64, sys
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    import seaborn as sns
+    __pd_has_matplotlib = True
+except ImportError:
+    __pd_has_matplotlib = False
+
+if __pd_has_matplotlib:
+    plt.clf()
+
+def __pd_custom_show():
+    if not __pd_has_matplotlib: return
+    fig = plt.gcf()
+    if fig.get_axes():
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='white')
+        buf.seek(0)
+        print(f'__PLOT_DATA__:{base64.b64encode(buf.read()).decode("UTF-8")}')
+    plt.close('all')
+
+if __pd_has_matplotlib:
+    plt.show = __pd_custom_show
+
+\${code}
+
+if __pd_has_matplotlib:
+    __pd_custom_show()
+\`;
+        }
+        
+        await pyodide.runPythonAsync(finalCode);
+        
+        const plotMatch = stdout.match(/__PLOT_DATA__:([A-Za-z0-9+/=]+)/);
+        const cleanStdout = stdout.replace(/__PLOT_DATA__:[A-Za-z0-9+\\/=]+\\n?/, '').trim();
+        const err = stderr ? stderr : undefined;
+        
+        return { 
+            text: cleanStdout, 
+            image: plotMatch ? plotMatch[1] : null, 
+            error: err 
+        };
+    } catch (e) {
+        return { text: '', image: null, error: e.toString() };
+    }
+}
+
+async function installPackage(packageName) {
+    if (!pyodideReady) return { success: false, error: 'Pyodide not initialized' };
+    try {
+        await pyodide.runPythonAsync('import micropip; await micropip.install("' + packageName + '")');
+        return { success: true, message: packageName + ' installed' };
+    } catch (e) {
+        return { success: false, error: e.toString() };
+    }
+}
+
+async function resetPyodide() {
+    pyodide = null;
+    pyodideReady = false;
+    return { success: true };
+}
+
+self.onmessage = async function(e) {
+    const { id, type, payload } = e.data;
+    let result;
+    
+    switch (type) {
+        case 'init':
+            result = await initPyodide(payload.packages, payload.autoloadPackages);
+            break;
+        case 'execute':
+            result = await executePython(payload.code, payload.wrap);
+            break;
+        case 'install':
+            result = await installPackage(payload.packageName);
+            break;
+        case 'reset':
+            result = await resetPyodide();
+            break;
+        default:
+            result = { error: 'Unknown message type: ' + type };
+    }
+    
+    self.postMessage({ id, result });
+};
+
+self.postMessage({ type: 'ready' });
+`;
+    }
+
+    private sendMessage(type: string, payload: any): Promise<any> {
+        return new Promise((resolve, reject) => {
+            if (!this.worker) {
+                reject(new Error('Worker not initialized'));
+                return;
+            }
+            
+            const id = this.generateId();
+            this.pendingRequests.set(id, { resolve, reject });
+            
+            // Timeout after 5 minutes for long-running Python code
+            const timeout = setTimeout(() => {
+                if (this.pendingRequests.has(id)) {
+                    this.pendingRequests.delete(id);
+                    reject(new Error('Request timeout'));
+                }
+            }, 300000);
+            
+            // Clear timeout on resolve
+            const originalResolve = resolve;
+            this.pendingRequests.set(id, {
+                resolve: (value) => {
+                    clearTimeout(timeout);
+                    originalResolve(value);
+                },
+                reject
+            });
+            
+            this.worker.postMessage({ id, type, payload });
+        });
+    }
+
+    async execute(code: string, wrap = true): Promise<{ text: string, image: string | null, error?: string }> {
+        if (!this.workerReady) {
+            return { text: '', image: null, error: 'Worker not ready' };
+        }
+        return await this.sendMessage('execute', { code, wrap });
+    }
+
+    async installPackage(packageName: string): Promise<{ success: boolean, error?: string }> {
+        return await this.sendMessage('install', { packageName });
+    }
+
+    async reset(): Promise<void> {
+        if (this.worker) {
+            await this.sendMessage('reset', {});
+            this.workerReady = false;
+            this.initPromise = null;
+        }
+    }
+
+    isReady(): boolean {
+        return this.workerReady;
+    }
+
+    terminate(): void {
+        if (this.worker) {
+            this.worker.terminate();
+            this.worker = null;
+            this.workerReady = false;
+            this.initPromise = null;
+        }
     }
 }
 
@@ -1004,6 +1313,8 @@ export default class PyDataPlugin extends Plugin {
     isInitializing: Promise<void> | null = null;
     view: DataStudioView | null = null;
     settings: PyDataSettings;
+    workerManager: PyodideWorkerManager | null = null;
+    useWorker: boolean = true; // Use Web Worker for non-blocking UI
 
     async onload() {
         await this.loadSettings();
@@ -1176,6 +1487,36 @@ export default class PyDataPlugin extends Plugin {
 
         this.isInitializing = (async () => {
             try {
+                // Use Web Worker for non-blocking UI
+                if (this.useWorker) {
+                    if (!this.workerManager) {
+                        // Get plugin path from manifest
+                        const pluginPath = (this.app as any).vault.adapter.basePath + '/.obsidian/plugins/obsidian-python-ds-studio';
+                        this.workerManager = new PyodideWorkerManager(pluginPath);
+                    }
+                    try {
+                        await this.workerManager.initialize(
+                            this.settings.requestedPackages,
+                            this.settings.autoloadPackages
+                        );
+                        if (this.workerManager.isReady()) {
+                            this.pyodideReady = true;
+                            new Notice(t(this.settings.language, "python_ready"));
+                            setTimeout(() => {
+                                new Notice(t(this.settings.language, "first_run_warning"), 6000);
+                            }, 1000);
+                            return;
+                        } else {
+                            console.warn("PyData: Worker failed to initialize, falling back to main thread");
+                            this.useWorker = false;
+                        }
+                    } catch (workerError) {
+                        console.warn("PyData: Worker initialization error, falling back to main thread:", workerError);
+                        this.useWorker = false;
+                    }
+                }
+
+                // Fallback to main thread (legacy mode)
                 await this.withNodeGlobalsHidden(async () => {
                     if (!window.loadPyodide) {
                         const script = document.createElement('script');
@@ -1183,9 +1524,13 @@ export default class PyDataPlugin extends Plugin {
                         document.head.appendChild(script);
                         await new Promise(r => script.onload = r);
                     }
+                    // Yield to UI before heavy Pyodide load
+                    await this.yieldToUI();
                     // @ts-ignore
                     this.pyodide = await window.loadPyodide({ indexURL: PYODIDE_BASE });
+                    await this.yieldToUI();
                     await this.pyodide.loadPackage(['numpy', 'pandas', 'matplotlib', 'scikit-learn', 'micropip', 'pyodide-http']);
+                    await this.yieldToUI();
                     await this.pyodide.runPythonAsync(`
                         import micropip
                         try: await micropip.install("seaborn")
@@ -1193,6 +1538,7 @@ export default class PyDataPlugin extends Plugin {
                         import pyodide_http
                         pyodide_http.patch_all()
                     `);
+                    await this.yieldToUI();
 
                     // Auto-load packages (Session + Autoload)
                     const allPkgs = [...new Set([...this.settings.requestedPackages, ...this.settings.autoloadPackages])];
@@ -1205,6 +1551,7 @@ export default class PyDataPlugin extends Plugin {
                             except Exception as e:
                                 print(f"Error auto-loading packages: {str(e)}")
                         `);
+                        await this.yieldToUI();
                     }
                 });
                 this.pyodideReady = true;
@@ -1222,13 +1569,51 @@ export default class PyDataPlugin extends Plugin {
     }
 
     resetPyodide() {
+        if (this.workerManager) {
+            this.workerManager.terminate();
+            this.workerManager = null;
+        }
         this.pyodide = null;
         this.pyodideReady = false;
         this.isInitializing = null;
     }
 
+    /**
+     * Yield to the UI thread to allow rendering (spinners, etc.) before a heavy operation.
+     */
+    private yieldToUI(): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, 0));
+    }
+
     async executePython(code: string, wrap = true): Promise<{ text: string, image: string | null, error?: string }> {
         if (!this.pyodideReady) { await this.initPyodide(true); }
+
+        // Use Web Worker for non-blocking UI
+        if (this.useWorker && this.workerManager && this.workerManager.isReady()) {
+            try {
+                const result = await this.workerManager.execute(code, wrap);
+                // Handle ModuleNotFoundError
+                if (result.error && result.error.includes("ModuleNotFoundError")) {
+                    const match = result.error.match(/ModuleNotFoundError: (?:The module )?'([^']+)'/);
+                    if (match) {
+                        const moduleName = match[1];
+                        const helpfulMsg = `\n\n💡 ${t(this.settings.language, "err_module_not_found").replace("{0}", moduleName)}\n${t(this.settings.language, "suggest_install_manual")}`;
+                        result.error += helpfulMsg;
+                    }
+                }
+                return result;
+            } catch (e: any) {
+                console.error("PyData: Worker execution error", e);
+                return { text: "", image: null, error: e.toString() };
+            }
+        }
+
+        // Fallback to main thread (legacy mode)
+        // Check if pyodide is available for fallback mode
+        if (!this.pyodide) {
+            console.error("PyData: Pyodide not initialized and Worker not available");
+            return { text: "", image: null, error: "Pyodide not initialized. Please restart the plugin or reload Obsidian." };
+        }
 
         try {
             let stdout = "";
@@ -1273,7 +1658,11 @@ if __pd_has_matplotlib:
 `;
             }
 
+            // Yield to UI before running Python to allow spinners to render
+            await this.yieldToUI();
             await this.pyodide.runPythonAsync(finalCode);
+            // Yield after to allow UI to catch up
+            await this.yieldToUI();
 
             const plotMatch = stdout.match(/__PLOT_DATA__:([A-Za-z0-9+/=]+)/);
             const cleanStdout = stdout.replace(/__PLOT_DATA__:[A-Za-z0-9+/=]+\n?/, '').trim();
@@ -1578,6 +1967,474 @@ if __pd_has_matplotlib:
         const link = await this.saveImageToVault(base64Data, defaultFileName, folderPath);
         return `![[${link}]]`;
     }
+
+    // --- GITHUB DOWNLOAD / UPDATE HELPERS ---
+    /**
+     * Download a text file (raw) from a URL and save it into the vault at desiredPath.
+     * If file exists, it will append a numeric suffix to avoid overwrite.
+     */
+    async downloadTextFileToVault(url: string, desiredPath: string): Promise<string> {
+        try {
+            const res = await fetch(url);
+            if (!res.ok) {
+                new Notice(`Error fetching ${url}: ${res.status}`);
+                return "";
+            }
+            const text = await res.text();
+            const path = normalizePath(desiredPath || 'SHOWCASE_EXAMPLES.md');
+            let finalPath = path;
+            let counter = 1;
+            while (this.app.vault.getAbstractFileByPath(finalPath)) {
+                const extIndex = path.lastIndexOf('.');
+                if (extIndex > -1) {
+                    const base = path.substring(0, extIndex);
+                    const ext = path.substring(extIndex);
+                    finalPath = `${base}_${counter}${ext}`;
+                } else {
+                    finalPath = `${path}_${counter}`;
+                }
+                counter++;
+            }
+            await this.app.vault.create(finalPath, text);
+            new Notice(t(this.settings.language, "download_saved_to").replace("{0}", finalPath));
+            return finalPath;
+        } catch (e) {
+            console.error("PyData: downloadTextFileToVault error", e);
+            new Notice(t(this.settings.language, "download_error"));
+            return "";
+        }
+    }
+
+    /**
+     * Download binary (zip/tar) from URL and save into vault as desiredPath. Returns final path or empty string on error.
+     */
+    async downloadBinaryToVault(url: string, desiredPath: string, githubToken?: string): Promise<string> {
+        try {
+            const headers: Record<string,string> = {};
+            if (githubToken) headers['Authorization'] = `token ${githubToken}`;
+            const res = await fetch(url, { headers });
+            if (!res.ok) {
+                new Notice(`Error fetching ${url}: ${res.status}`);
+                return "";
+            }
+            const arrayBuffer = await res.arrayBuffer();
+            const path = normalizePath(desiredPath || 'obsidian-python-ds-studio-latest.zip');
+            let finalPath = path;
+            let counter = 1;
+            while (this.app.vault.getAbstractFileByPath(finalPath)) {
+                const extIndex = path.lastIndexOf('.');
+                if (extIndex > -1) {
+                    const base = path.substring(0, extIndex);
+                    const ext = path.substring(extIndex);
+                    finalPath = `${base}_${counter}${ext}`;
+                } else {
+                    finalPath = `${path}_${counter}`;
+                }
+                counter++;
+            }
+            await this.app.vault.createBinary(finalPath, arrayBuffer);
+            new Notice(t(this.settings.language, "download_saved_to").replace("{0}", finalPath));
+            return finalPath;
+        } catch (e) {
+            console.error("PyData: downloadBinaryToVault error", e);
+            // Distinguish likely CORS failures from other errors
+            const msg = (e && (e as any).message) ? (e as any).message : String(e);
+            console.error('PyData: downloadBinaryToVault caught', msg);
+            // Try Obsidian requestUrl (uses main process/network stack and avoids renderer CORS)
+            try {
+                const r = await requestUrl({ url, headers: githubToken ? { Authorization: `token ${githubToken}` } : undefined, throw: false });
+                if (r && r.status === 200) {
+                    // r.arrayBuffer may not exist; requestUrl returns text in .text and binary in .arrayBuffer when available
+                    let buffer: ArrayBuffer | null = null;
+                    try {
+                        // requestUrl may provide arrayBuffer() as a function
+                        if (typeof (r as any).arrayBuffer === 'function') {
+                            buffer = await (r as any).arrayBuffer();
+                        }
+                    } catch (abErr) {
+                        console.warn('PyData: requestUrl.arrayBuffer() not available or failed', abErr);
+                        buffer = null;
+                    }
+                    if (!buffer && r.text) {
+                        const encoder = new TextEncoder();
+                        buffer = encoder.encode(r.text).buffer;
+                    }
+                    if (buffer) {
+                        const saved = await this.saveArrayBufferToVault(buffer, desiredPath);
+                        if (saved) return saved;
+                    }
+                }
+            } catch (reqErr) {
+                console.error('PyData: requestUrl fallback failed', reqErr);
+            }
+
+            new Notice(t(this.settings.language, "update_cors_blocked") + ' — ' + url);
+            return "";
+        }
+    }
+
+    async saveArrayBufferToVault(buffer: ArrayBuffer, desiredPath: string): Promise<string> {
+        try {
+            const path = normalizePath(desiredPath || 'obsidian-python-ds-studio-latest.zip');
+            let finalPath = path;
+            let counter = 1;
+            while (this.app.vault.getAbstractFileByPath(finalPath)) {
+                const extIndex = path.lastIndexOf('.');
+                if (extIndex > -1) {
+                    const base = path.substring(0, extIndex);
+                    const ext = path.substring(extIndex);
+                    finalPath = `${base}_${counter}${ext}`;
+                } else {
+                    finalPath = `${path}_${counter}`;
+                }
+                counter++;
+            }
+            await this.app.vault.createBinary(finalPath, buffer);
+            new Notice(t(this.settings.language, "download_saved_to").replace("{0}", finalPath));
+            return finalPath;
+        } catch (e) {
+            console.error('PyData: saveArrayBufferToVault failed', e);
+            return "";
+        }
+    }
+
+    async getLocalPackageVersion(): Promise<string> {
+        try {
+            const pkgPath = normalizePath('.obsidian/plugins/obsidian-python-ds-studio/package.json');
+            const f = this.app.vault.getAbstractFileByPath(pkgPath);
+            if (f && f instanceof TFile) {
+                const content = await this.app.vault.read(f);
+                const json = JSON.parse(content);
+                return json.version || '0.0.0';
+            }
+        } catch (e) {
+            // ignore
+        }
+        return '0.0.0';
+    }
+
+    _isVersionNewer(remote: string, local: string) {
+        const parse = (v: string) => v.replace(/^v/, '').split('.').map(s => parseInt(s || '0'));
+        const r = parse(remote);
+        const l = parse(local);
+        for (let i = 0; i < Math.max(r.length, l.length); i++) {
+            const rv = r[i] || 0;
+            const lv = l[i] || 0;
+            if (rv > lv) return true;
+            if (rv < lv) return false;
+        }
+        return false;
+    }
+
+    /**
+     * Check GitHub latest release and (optionally) download the primary asset or zipball.
+     * It saves the downloaded file into the vault (zip) and informs the user.
+     */
+    async checkAndDownloadLatestRelease(saveAs = 'obsidian-python-ds-studio-latest.zip') {
+        try {
+            const localVer = await this.getLocalPackageVersion();
+            const apiUrl = 'https://api.github.com/repos/infinition/obsidian-python-ds-studio/releases/latest';
+            const headers: Record<string,string> = { 'Accept': 'application/vnd.github.v3+json' };
+            if (this.settings.githubToken) headers['Authorization'] = `token ${this.settings.githubToken}`;
+            const res = await fetch(apiUrl, { headers });
+            if (!res.ok) {
+                new Notice(t(this.settings.language, "update_check_error"));
+                return '';
+            }
+            const json = await res.json();
+            const remoteTag = json.tag_name || json.name || '';
+            if (!remoteTag) {
+                new Notice(t(this.settings.language, "update_no_release"));
+                return '';
+            }
+            if (!this._isVersionNewer(remoteTag, localVer)) {
+                new Notice(t(this.settings.language, "update_no_newer"));
+                return '';
+            }
+
+            // Prefer assets if available
+            if (json.assets && json.assets.length > 0) {
+                // Try to find a zip asset or any asset
+                let asset = json.assets.find((a: any) => a.name && a.name.endsWith('.zip')) || json.assets[0];
+                if (asset && asset.browser_download_url) {
+                    new Notice(t(this.settings.language, "update_downloading"));
+                    const saved = await this.downloadBinaryToVault(asset.browser_download_url, saveAs, this.settings.githubToken);
+                    if (saved) return saved;
+                    // Fallback when fetch is blocked by CORS: open in external browser for manual download
+                    try { window.open(asset.browser_download_url); } catch (e) { /* ignore */ }
+                    new Notice(t(this.settings.language, "update_cors_blocked") + ' — ' + asset.browser_download_url);
+                    return '';
+                }
+            }
+
+            // Fallback: download zipball
+            if (json.zipball_url) {
+                new Notice(t(this.settings.language, "update_downloading"));
+                const saved = await this.downloadBinaryToVault(json.zipball_url, saveAs, this.settings.githubToken);
+                if (saved) return saved;
+                try { window.open(json.zipball_url); } catch (e) { /* ignore */ }
+                new Notice(t(this.settings.language, "update_cors_blocked") + ' — ' + json.zipball_url);
+                return '';
+            }
+
+            new Notice(t(this.settings.language, "update_no_asset"));
+            return '';
+        } catch (e) {
+            console.error('PyData: checkAndDownloadLatestRelease', e);
+            new Notice(t(this.settings.language, "update_check_error"));
+            return '';
+        }
+    }
+
+    /**
+     * Install the latest release: download zip (asset or zipball), extract and overwrite plugin files.
+     * Returns true on success.
+     */
+    async installLatestRelease(): Promise<boolean> {
+        try {
+            const apiUrl = 'https://api.github.com/repos/infinition/obsidian-python-ds-studio/releases/latest';
+            const headers: Record<string,string> = { 'Accept': 'application/vnd.github.v3+json' };
+            if (this.settings.githubToken) headers['Authorization'] = `token ${this.settings.githubToken}`;
+            const res = await fetch(apiUrl, { headers });
+            if (!res.ok) {
+                new Notice(t(this.settings.language, 'update_check_error'));
+                return false;
+            }
+            const json = await res.json();
+            const remoteTag = json.tag_name || json.name || '';
+            if (!remoteTag) {
+                new Notice(t(this.settings.language, 'update_no_release'));
+                return false;
+            }
+
+            const localVer = await this.getLocalPackageVersion();
+            if (!this._isVersionNewer(remoteTag, localVer)) {
+                new Notice(t(this.settings.language, 'update_no_newer'));
+                return false;
+            }
+
+            // determine download url
+            let downloadUrl = '';
+            if (json.assets && json.assets.length > 0) {
+                const asset = json.assets.find((a: any) => a.name && a.name.endsWith('.zip')) || json.assets[0];
+                if (asset && asset.browser_download_url) downloadUrl = asset.browser_download_url;
+            }
+            if (!downloadUrl && json.zipball_url) downloadUrl = json.zipball_url;
+            if (!downloadUrl) {
+                new Notice(t(this.settings.language, 'update_no_asset'));
+                return false;
+            }
+
+            new Notice(t(this.settings.language, 'update_downloading'));
+            let arrayBuffer: ArrayBuffer | null = null;
+            try {
+                const dlHeaders: Record<string,string> = {};
+                if (this.settings.githubToken) dlHeaders['Authorization'] = `token ${this.settings.githubToken}`;
+                const bufRes = await fetch(downloadUrl, { headers: dlHeaders });
+                if (!bufRes.ok) {
+                    throw new Error('bad response');
+                }
+                arrayBuffer = await bufRes.arrayBuffer();
+            } catch (e) {
+                // Likely CORS blocked. Fallback: open external browser to let user download manually.
+                try { window.open(downloadUrl); } catch (ee) { /* ignore */ }
+                new Notice(t(this.settings.language, 'update_cors_blocked') + ' — ' + downloadUrl);
+                return false;
+            }
+
+            // Load JSZip dynamically if not present
+            if (!(window as any).JSZip) {
+                await new Promise<void>((resolve, reject) => {
+                    const s = document.createElement('script');
+                    s.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+                    s.onload = () => resolve();
+                    s.onerror = (e) => reject(e);
+                    document.head.appendChild(s);
+                });
+            }
+
+            const JSZip = (window as any).JSZip;
+            if (!JSZip) {
+                new Notice(t(this.settings.language, 'download_error'));
+                return false;
+            }
+
+            const zip = await JSZip.loadAsync(arrayBuffer);
+
+            // Determine if zip has top-level folder and compute prefix
+            const names = Object.keys(zip.files).filter(n => n && !n.endsWith('/'));
+            let prefix = '';
+            if (names.length > 0) {
+                const parts = names[0].split('/');
+                if (parts.length > 1) prefix = parts[0] + '/';
+            }
+
+            const targetRoot = normalizePath('.obsidian/plugins/obsidian-python-ds-studio');
+
+            // Ensure plugin folder exists
+            if (!this.app.vault.getAbstractFileByPath(targetRoot)) {
+                await this.app.vault.createFolder(targetRoot);
+            }
+
+            for (const entryName of Object.keys(zip.files)) {
+                const entry = zip.files[entryName];
+                if (entry.dir) continue;
+                // compute relative path inside plugin
+                let rel = entryName;
+                if (prefix && rel.startsWith(prefix)) rel = rel.slice(prefix.length);
+                if (!rel) continue;
+                const outPath = normalizePath(`${targetRoot}/${rel}`);
+
+                // Ensure parent folders exist
+                const parts = outPath.split('/');
+                parts.pop();
+                let cur = '';
+                for (const p of parts) {
+                    cur = cur ? `${cur}/${p}` : p;
+                    if (!this.app.vault.getAbstractFileByPath(cur)) {
+                        try { await this.app.vault.createFolder(cur); } catch (e) { /* ignore */ }
+                    }
+                }
+
+                // Decide binary or text
+                const textExts = ['.js', '.ts', '.json', '.css', '.md', '.html', '.txt'];
+                const isText = textExts.some(ext => outPath.toLowerCase().endsWith(ext));
+                if (isText) {
+                    const content = await entry.async('string');
+                    const existing = this.app.vault.getAbstractFileByPath(outPath);
+                    if (existing && existing instanceof TFile) {
+                        await this.app.vault.modify(existing, content);
+                    } else {
+                        await this.app.vault.create(outPath, content);
+                    }
+                } else {
+                    const u8 = await entry.async('uint8array');
+                    const existing = this.app.vault.getAbstractFileByPath(outPath);
+                    if (existing && existing instanceof TFile) {
+                        await this.app.vault.modify(existing, u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength as any) as any);
+                    } else {
+                        await this.app.vault.createBinary(outPath, u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength));
+                    }
+                }
+            }
+
+            new Notice(`Installed latest release ${remoteTag}. Reloading plugin...`);
+            // Try to reload plugin
+                try {
+                    // plugin id assumed to be folder name
+                    const pluginsApi = (this.app as any).plugins;
+                    if (pluginsApi && typeof pluginsApi.reloadPlugin === 'function') {
+                        pluginsApi.reloadPlugin('obsidian-python-ds-studio');
+                    } else if (pluginsApi && typeof pluginsApi.disablePlugin === 'function' && typeof pluginsApi.enablePlugin === 'function') {
+                        await pluginsApi.disablePlugin('obsidian-python-ds-studio');
+                        await pluginsApi.enablePlugin('obsidian-python-ds-studio');
+                    }
+                } catch (e) {
+                console.warn('Could not reload plugin programmatically, please reload Obsidian or disable/enable the plugin manually.', e);
+            }
+
+            return true;
+        } catch (e) {
+            console.error('PyData: installLatestRelease', e);
+            new Notice(t(this.settings.language, 'update_check_error'));
+            return false;
+        }
+    }
+
+    /**
+     * Update plugin by downloading specific assets from the latest GitHub release
+     * Similar behavior to your obsidget plugin: downloads main.js, manifest.json, styles.css
+     * Backs up existing files before overwriting and then reloads the plugin.
+     */
+    async updatePlugin(): Promise<void> {
+        try {
+            const releaseUrl = 'https://api.github.com/repos/infinition/obsidian-python-ds-studio/releases/latest';
+            const headers: Record<string,string> = { 'Accept': 'application/vnd.github.v3+json' };
+            if (this.settings.githubToken) headers['Authorization'] = `token ${this.settings.githubToken}`;
+
+            new Notice(t(this.settings.language, 'checking_for_updates') || 'Checking for updates...');
+            const resp = await requestUrl({ url: releaseUrl, headers, throw: false });
+            if (!resp || resp.status !== 200) {
+                throw new Error(`GitHub API returned ${resp ? resp.status : 'no response'}`);
+            }
+            const release = resp.json;
+            const assets = release.assets;
+            if (!assets || !Array.isArray(assets) || assets.length === 0) {
+                throw new Error('No assets found in latest release.');
+            }
+
+            const filesToDownload = ['main.js', 'manifest.json', 'styles.css'];
+            const pluginDir = normalizePath('.obsidian/plugins/obsidian-python-ds-studio');
+
+            // Ensure plugin folder exists
+            if (!await this.app.vault.adapter.exists(pluginDir)) {
+                await this.app.vault.adapter.mkdir(pluginDir);
+            }
+
+            // Create backup folder
+            const backupDir = `${pluginDir}.backup.${Date.now()}`;
+            try { await this.app.vault.adapter.mkdir(backupDir); } catch (e) { /* ignore */ }
+
+            for (const fileName of filesToDownload) {
+                const asset = assets.find((a: any) => a.name === fileName) || assets.find((a: any) => a.name && a.name.endsWith(fileName));
+                if (!asset || !asset.browser_download_url) continue;
+
+                new Notice(`Downloading ${fileName}...`);
+                const fileResp = await requestUrl({ url: asset.browser_download_url, headers, throw: false });
+                if (!fileResp || fileResp.status !== 200) {
+                    console.warn(`Failed to download ${fileName}:`, fileResp && fileResp.status);
+                    continue;
+                }
+
+                // Backup existing
+                const targetPath = normalizePath(`${pluginDir}/${fileName}`);
+                try {
+                    if (await this.app.vault.adapter.exists(targetPath)) {
+                        const existing = await this.app.vault.adapter.read(targetPath);
+                        await this.app.vault.adapter.write(`${backupDir}/${fileName}`, existing);
+                    }
+                } catch (e) {
+                    console.warn('Backup failed for', targetPath, e);
+                }
+
+                // Write new file (text)
+                try {
+                    const content = fileResp.text;
+                    if (typeof content === 'string') {
+                        await this.app.vault.adapter.write(targetPath, content);
+                    } else {
+                        // Fallback: try to convert arrayBuffer -> string
+                        try {
+                            const buf = (await (fileResp as any).arrayBuffer());
+                            const decoder = new TextDecoder();
+                            const str = decoder.decode(buf);
+                            await this.app.vault.adapter.write(targetPath, str);
+                        } catch (ee) {
+                            console.error('Failed to write downloaded asset as text for', fileName, ee);
+                        }
+                    }
+                } catch (e) {
+                    console.error('Write failed for', targetPath, e);
+                }
+            }
+
+            new Notice('Plugin updated! Reloading...');
+            try {
+                const pluginsApi = (this.app as any).plugins;
+                if (pluginsApi && typeof pluginsApi.disablePlugin === 'function' && typeof pluginsApi.enablePlugin === 'function') {
+                    await pluginsApi.disablePlugin('obsidian-python-ds-studio');
+                    await pluginsApi.enablePlugin('obsidian-python-ds-studio');
+                } else if (pluginsApi && typeof pluginsApi.reloadPlugin === 'function') {
+                    pluginsApi.reloadPlugin('obsidian-python-ds-studio');
+                }
+            } catch (e) {
+                console.warn('Could not reload plugin programmatically, please reload Obsidian or disable/enable the plugin manually.', e);
+            }
+        } catch (e: any) {
+            console.error('updatePlugin failed', e);
+            new Notice('Update failed: ' + (e && e.message ? e.message : String(e)));
+        }
+    }
 }
 
 class PyDataSettingTab extends PluginSettingTab {
@@ -1708,6 +2565,19 @@ except:
                     };
                 });
             }
+
+            // --- GITHUB TOKEN (OPTIONAL) ---
+            containerEl.createEl('hr');
+            new Setting(containerEl)
+                .setName('GitHub token (optional)')
+                .setDesc('Personal access token to increase API rate limits or access private releases. Stored locally in plugin settings.')
+                .addText(text => text
+                    .setPlaceholder('ghp_...')
+                    .setValue(this.plugin.settings.githubToken || '')
+                    .onChange(async (v) => {
+                        this.plugin.settings.githubToken = v.trim() || undefined;
+                        await this.plugin.saveSettings();
+                    }));
         };
 
         const tagsContainer = containerEl.createEl("div", { attr: { style: "margin-top: 10px;" } });
@@ -1749,5 +2619,84 @@ except Exception as e:
             btnAdd.disabled = false;
             new Notice(t(this.plugin.settings.language, "pkg_installed"));
         };
+
+        // --- SECTION: SHOWCASE / EXAMPLES ---
+        containerEl.createEl('hr');
+        const showcaseHeader = containerEl.createEl('div', { cls: 'ds-pip-mem-section' });
+        showcaseHeader.createEl('h3', { text: 'Showcase & Examples' });
+
+        const showcaseDesc = containerEl.createEl('div', { text: 'Download example .md file from the repository (SHOWCASE_EXAMPLES.md)', cls: 'setting-item-description' });
+        new Setting(containerEl)
+            .addButton(btn => btn
+                .setButtonText('Download SHOWCASE_EXAMPLES.md')
+                .setCta()
+                .onClick(async () => {
+                    btn.setDisabled(true);
+                    btn.setButtonText('Downloading...');
+                    const rawUrl = 'https://raw.githubusercontent.com/infinition/obsidian-python-ds-studio/main/SHOWCASE_EXAMPLES.md';
+                    const saved = await this.plugin.downloadTextFileToVault(rawUrl, 'SHOWCASE_EXAMPLES.md');
+                    if (saved) {
+                        new Notice(t(this.plugin.settings.language, 'download_saved_to').replace('{0}', saved));
+                    }
+                    btn.setDisabled(false);
+                    btn.setButtonText('Download SHOWCASE_EXAMPLES.md');
+                }));
+
+        // --- SECTION: UPDATE CHECK ---
+        containerEl.createEl('hr');
+        const updHeader = containerEl.createEl('div', { cls: 'ds-pip-mem-section' });
+        updHeader.createEl('h3', { text: 'Plugin Update' });
+        updHeader.createEl('p', { text: 'Check Github releases for a newer version and download the release asset or zipball into your vault.' });
+
+        new Setting(containerEl)
+            .addButton(btn => btn
+                .setButtonText('Check for updates & Download')
+                .setCta()
+                .onClick(async () => {
+                    btn.setDisabled(true);
+                    btn.setButtonText('Checking...');
+                    const saved = await this.plugin.checkAndDownloadLatestRelease('.obsidian/plugins/obsidian-python-ds-studio/update-latest.zip');
+                    if (saved) {
+                        new Notice(t(this.plugin.settings.language, 'download_saved_to').replace('{0}', saved));
+                    }
+                    btn.setDisabled(false);
+                    btn.setButtonText('Check for updates & Download');
+                }));
+
+        // Update plugin like obsidget (download assets and overwrite plugin files)
+        new Setting(containerEl)
+            .addButton(btn => btn
+                .setButtonText('Build Update (download assets and overwrite plugin files)')
+                .setWarning()
+                .onClick(async () => {
+                    btn.setDisabled(true);
+                    btn.setButtonText('Updating...');
+                    await this.plugin.updatePlugin();
+                    btn.setDisabled(false);
+                    btn.setButtonText('Build Update (download assets and overwrite plugin files)');
+                }));
+
+        // Quick open latest release in the browser (manual download)
+        new Setting(containerEl)
+            .addButton(btn => btn
+                .setButtonText('Open latest release in browser')
+                .onClick(async () => {
+                    try {
+                        const apiUrl = 'https://api.github.com/repos/infinition/obsidian-python-ds-studio/releases/latest';
+                        const headers: Record<string,string> = { 'Accept': 'application/vnd.github.v3+json' };
+                        if (this.plugin.settings.githubToken) headers['Authorization'] = `token ${this.plugin.settings.githubToken}`;
+                        const res = await fetch(apiUrl, { headers });
+                        if (!res.ok) {
+                            new Notice(t(this.plugin.settings.language, 'update_check_error'));
+                            return;
+                        }
+                        const json = await res.json();
+                        const url = json.html_url || json.zipball_url || (json.assets && json.assets[0] && json.assets[0].browser_download_url) || 'https://github.com/infinition/obsidian-python-ds-studio/releases';
+                        try { window.open(url); } catch (e) { /* ignore */ }
+                        new Notice('Opened latest release in browser.');
+                    } catch (e) {
+                        new Notice(t(this.plugin.settings.language, 'update_check_error'));
+                    }
+                }));
     }
 }

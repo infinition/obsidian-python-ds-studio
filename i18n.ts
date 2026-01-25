@@ -89,7 +89,16 @@ export const TRANSLATIONS = {
         autoload_add: "Add to Autoload",
         uninstallation_warning: "⚠️ If you remove a package, you must restart Obsidian or perform a 'Flush' to reinstall it or see it disappear from the active environment list.",
         flush_tooltip_detailed: "Reset Python environment (Flush Memory). Attention: Flush clears 'Memorized Packages' from the Packages tab, but not 'Autoload Packages' in settings.",
-        suggest_install_manual: "You can also install it manually via the 'Packages' tab in the Studio or in the plugin settings."
+    suggest_install_manual: "You can also install it manually via the 'Packages' tab in the Studio or in the plugin settings.",
+    download_saved_to: "Downloaded and saved to {0}",
+    download_error: "Error during download.",
+    update_check_error: "Error checking for updates.",
+    update_no_release: "No releases found for this repository.",
+    update_no_newer: "No newer release available.",
+    update_downloading: "Downloading update...",
+        update_no_asset: "No downloadable asset found in the latest release.",
+        update_cors_blocked: "Download blocked by CORS — opened in browser for manual download"
+        ,checking_for_updates: "Checking for updates..."
     },
     fr: {
         studio_title: "Python DS Studio",
@@ -181,7 +190,16 @@ export const TRANSLATIONS = {
         autoload_add: "Ajouter à l'Auto-chargement",
         uninstallation_warning: "⚠️ Si vous enlevez un package, vous devrez relancer Obsidian ou faire un 'Flush' si vous voulez le réinstaller ou le voir disparaître de la liste de l'environnement actif.",
         flush_tooltip_detailed: "Réinitialiser l'environnement Python (Flush Memory). Attention : le Flush vide les 'Paquets mémorisés' de l'onglet Paquets, mais pas les 'Paquets en Auto-chargement' dans les réglages.",
-        suggest_install_manual: "Vous pouvez aussi l'installer manuellement via l'onglet 'Paquets' du Studio ou dans les réglages du plugin."
+    suggest_install_manual: "Vous pouvez aussi l'installer manuellement via l'onglet 'Paquets' du Studio ou dans les réglages du plugin.",
+    download_saved_to: "Téléchargé et sauvegardé dans {0}",
+    download_error: "Erreur lors du téléchargement.",
+    update_check_error: "Erreur lors de la vérification des mises à jour.",
+    update_no_release: "Aucune release trouvée pour ce dépôt.",
+    update_no_newer: "Aucune release plus récente disponible.",
+    update_downloading: "Téléchargement de la mise à jour...",
+        update_no_asset: "Aucun asset téléchargeable trouvé dans la dernière release.",
+        update_cors_blocked: "Téléchargement bloqué par CORS — ouverture du navigateur pour téléchargement manuel"
+        ,checking_for_updates: "Recherche de mises à jour..."
     },
     es: {
         studio_title: "Python DS Studio",
@@ -259,6 +277,14 @@ export const TRANSLATIONS = {
         autoload_explanation: "A diferencia de los 'Paquetes memorizados' en el Studio, que son específicos de la sesión actual y se borran al hacer 'Flush', estos paquetes son persistentes y siempre están disponibles.",
         autoload_input_placeholder: "Nombre del paquete para carga automática",
         autoload_add: "Añadir a Carga Automática"
+    ,
+    download_saved_to: "Downloaded and saved to {0}",
+    download_error: "Error during download.",
+    update_check_error: "Error checking for updates.",
+    update_no_release: "No releases found for this repository.",
+    update_no_newer: "No newer release available.",
+    update_downloading: "Downloading update...",
+    update_no_asset: "No downloadable asset found in the latest release."
     },
     de: {
         studio_title: "Python DS Studio",
@@ -336,6 +362,14 @@ export const TRANSLATIONS = {
         autoload_explanation: "Im Gegensatz zu den 'Gespeicherten Paketen' im Studio, die spezifisch für die aktuelle Sitzung sind und beim 'Flush' gelöscht werden, sind diese Pakete persistent und immer verfügbar.",
         autoload_input_placeholder: "Paketname zum automatischen Laden",
         autoload_add: "Zum automatischen Laden hinzufügen"
+    ,
+    download_saved_to: "Downloaded and saved to {0}",
+    download_error: "Error during download.",
+    update_check_error: "Error checking for updates.",
+    update_no_release: "No releases found for this repository.",
+    update_no_newer: "No newer release available.",
+    update_downloading: "Downloading update...",
+    update_no_asset: "No downloadable asset found in the latest release."
     },
     it: {
         studio_title: "Python DS Studio",
@@ -413,6 +447,14 @@ export const TRANSLATIONS = {
         autoload_explanation: "A differenza dei 'Pacchetti memorizzati' nello Studio, che sono specifici della sessione corrente e vengono cancellati al 'Flush', questi pacchetti sono persistenti e sempre disponibili.",
         autoload_input_placeholder: "Nome del package da caricare automaticamente",
         autoload_add: "Aggiungi all'Avvio Automatico"
+    ,
+    download_saved_to: "Downloaded and saved to {0}",
+    download_error: "Error during download.",
+    update_check_error: "Error checking for updates.",
+    update_no_release: "No releases found for this repository.",
+    update_no_newer: "No newer release available.",
+    update_downloading: "Downloading update...",
+    update_no_asset: "No downloadable asset found in the latest release."
     }
 };
 
