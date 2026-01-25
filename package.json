@@ -1,0 +1,34 @@
+{
+  "name": "obsidian-python-ds-studio",
+  "version": "1.0.0",
+  "description": "Obsidian Data Science Plugin with Pyodide",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production"
+  },
+  "keywords": [],
+  "author": "Infinition",
+  "license": "MIT",
+  "repository": "https://github.com/infinition/obsidian-python-ds-studio",
+  "devDependencies": {
+    "@types/node": "^16.11.6",
+    "@typescript-eslint/eslint-plugin": "5.29.0",
+    "@typescript-eslint/parser": "5.29.0",
+    "builtin-modules": "3.3.0",
+    "esbuild": "0.17.3",
+    "obsidian": "latest",
+    "tslib": "2.4.0",
+    "typescript": "4.7.4"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.20.0",
+    "@codemirror/commands": "^6.10.1",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/language": "^6.12.1",
+    "@codemirror/lint": "^6.9.2",
+    "@codemirror/search": "^6.6.0",
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/view": "^6.36.2"
+  }
+}

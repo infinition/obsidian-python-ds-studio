@@ -1,0 +1,10 @@
+{
+    "id": "obsidian-python-ds-studio",
+    "name": "Python DS Studio",
+    "version": "1.0.0",
+    "minAppVersion": "0.15.0",
+    "description": "Exécute du code Python DataScience (Pandas, Seaborn) et sauvegarde l'output dans la note.",
+    "author": "Infinition",
+    "authorUrl": "https://github.com/infinition/obsidian-python-ds-studio",
+    "isDesktopOnly": false
+}

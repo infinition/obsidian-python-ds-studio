@@ -1,0 +1,77 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Clean previous build
+        run: |
+          rm -rf release obsidian-python-ds-studio.zip
+          rm -f main.js
+
+      - name: Build plugin (TypeScript → JavaScript)
+        run: npm run build
+
+      - name: Verify build output
+        run: |
+          if [ ! -f main.js ]; then
+            echo "❌ main.js was not generated"
+            exit 1
+          fi
+          echo "✅ main.js generated"
+          ls -lh main.js
+
+      - name: Verify required files
+        run: |
+          for file in manifest.json styles.css; do
+            if [ ! -f "$file" ]; then
+              echo "❌ Missing $file"
+              exit 1
+            fi
+          done
+          echo "✅ manifest.json and styles.css found"
+
+      - name: Prepare release folder
+        run: |
+          mkdir -p release
+          cp main.js manifest.json styles.css release/
+
+      - name: Create release zip
+        run: |
+          cd release
+          zip -r ../obsidian-python-ds-studio.zip .
+          cd ..
+
+      - name: Verify release contents
+        run: |
+          unzip -l obsidian-python-ds-studio.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            main.js
+            manifest.json
+            styles.css
+            obsidian-python-ds-studio.zip

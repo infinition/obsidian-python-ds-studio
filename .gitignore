@@ -1,0 +1,25 @@
+# Dependency directories
+node_modules/
+
+# Build outputs
+main.js
+styles.css
+release/
+*.zip
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# IDE metadata
+.vscode/
+.idea/
+
+# Obsidian local data (if any)
+data.json
+.obsidian/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
