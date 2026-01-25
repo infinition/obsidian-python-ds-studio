@@ -1,10 +1,35 @@
 {
-    "id": "obsidian-python-ds-studio",
-    "name": "Python DS Studio",
-    "version": "1.0.0",
-    "minAppVersion": "0.15.0",
-    "description": "Exécute du code Python DataScience (Pandas, Seaborn) et sauvegarde l'output dans la note.",
-    "author": "Infinition",
-    "authorUrl": "https://github.com/infinition/obsidian-python-ds-studio",
-    "isDesktopOnly": false
+  "name": "OBSIDIAN-PYTHON-DS-STUDIO WIKI",
+  "short_name": "obsidian-python-ds-studio",
+  "description": "Official Documentation and Wiki for obsidian-python-ds-studio",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0B0C0E",
+  "theme_color": "#22c55e",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "wiki/assets/logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "wiki/assets/logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Search Wiki",
+      "url": "./index.html?search=true",
+      "icons": [
+        {
+          "src": "wiki/assets/logo.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ]
 }
