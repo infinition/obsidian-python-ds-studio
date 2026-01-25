@@ -1,4 +1,5 @@
-![logo](https://github.com/user-attachments/assets/fdf2880f-c6da-4dab-b29a-e8b6e5c3f7e3)
+
+<img width="256" height="256" alt="logo-removebg-preview" src="https://github.com/user-attachments/assets/45f788db-571e-4469-9c27-083fe317eb4b" />
 
 # Python DS Studio
 
