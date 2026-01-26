@@ -3,6 +3,7 @@
 
 # Python DS Studio
 
+
 **Python DS Studio** is a high-performance Python Data Science environment for Obsidian. Powered by [Pyodide](https://pyodide.org/), it enables local execution of Python code, advanced data visualization (Matplotlib/Seaborn/Plotly), and dynamic package management directly within your vault.
 
 
