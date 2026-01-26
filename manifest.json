@@ -1,11 +1,35 @@
 {
-  "id": "obsidian-python-ds-studio",
-  "name": "Python Data Science Studio",
-  "version": "1.0.0",
-  "minAppVersion": "1.0.0",
-  "author": "Infinition",
-  "description": "Run Python code with Pyodide inside Obsidian and manage packages.",
-  "main": "main.js",
-  "scripts": {},
-  "css": "styles.css"
+  "name": "OBSIDIAN-PYTHON-DS-STUDIO WIKI",
+  "short_name": "obsidian-python-ds-studio",
+  "description": "Official Documentation and Wiki for obsidian-python-ds-studio",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0B0C0E",
+  "theme_color": "#22c55e",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "wiki/assets/logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "wiki/assets/logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Search Wiki",
+      "url": "./index.html?search=true",
+      "icons": [
+        {
+          "src": "wiki/assets/logo.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ]
 }

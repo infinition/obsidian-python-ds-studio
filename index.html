@@ -913,47 +913,34 @@
                             class="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity"></i>
                     </button>
                 </div>
-                <div class="nav-group mb-1">
-                    <button id="btn-root-readme"
-                        class="w-full text-left px-2 py-2 flex items-center justify-between text-gray-500 hover:text-hack-heading transition-colors cursor-pointer group rounded hover:bg-hack-bg focus:bg-hack-bg outline-none"
-                        onclick="loadContent('', CONFIG.ui.rootReadmeTitle, 'README.md', true, true)" tabindex="0">
+
+                <nav class="pb-4 px-3 space-y-2 flex-none" id="nav-container">
+                    <div class="text-center text-xs text-gray-500 mt-4 p-4">
                         <div
-                            class="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest font-mono text-hack-green">
-                            <i data-lucide="home" class="w-3 h-3"></i> <span id="label-root-readme">Project Home</span>
+                            class="w-4 h-4 border-2 border-hack-green border-t-transparent rounded-full animate-spin mx-auto mb-2">
                         </div>
-                        <i data-lucide="chevron-right"
-                            class="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity"></i>
-                    </button>
-                </div>
-            </div>
-
-            <nav class="pb-4 px-3 space-y-2 flex-none" id="nav-container">
-                <div class="text-center text-xs text-gray-500 mt-4 p-4">
-                    <div
-                        class="w-4 h-4 border-2 border-hack-green border-t-transparent rounded-full animate-spin mx-auto mb-2">
+                        <span id="label-initializing">Initializing...</span>
                     </div>
-                    <span id="label-initializing">Initializing...</span>
-                </div>
-            </nav>
+                </nav>
 
-            <div id="custom-links-bottom" class="px-3 pb-4 space-y-1"></div>
-        </div>
-
-        <div id="social-section" class="p-4 border-t border-hack-border bg-hack-bg/30 flex-none">
-            <div id="search-results-msg" class="hidden px-4 py-2 text-xs text-red-400 text-center italic">
-                No results found.
+                <div id="custom-links-bottom" class="px-3 pb-4 space-y-1"></div>
             </div>
-            <div class="text-center">
-                <strong id="label-join-us" class="text-gray-500 text-sm block mb-3 font-mono tracking-wide">:: JOIN
-                    US ::</strong>
-                <div id="social-links" class="flex flex-col gap-2">
+
+            <div id="social-section" class="p-4 border-t border-hack-border bg-hack-bg/30 flex-none">
+                <div id="search-results-msg" class="hidden px-4 py-2 text-xs text-red-400 text-center italic">
+                    No results found.
+                </div>
+                <div class="text-center">
+                    <strong id="label-join-us" class="text-gray-500 text-sm block mb-3 font-mono tracking-wide">:: JOIN
+                        US ::</strong>
+                    <div id="social-links" class="flex flex-col gap-2">
+                    </div>
                 </div>
             </div>
-        </div>
 
-        <div id="sidebar-footer"
-            class="p-4 border-t border-hack-border bg-hack-bg/50 text-[10px] text-gray-500 font-mono text-center">
-        </div>
+            <div id="sidebar-footer"
+                class="p-4 border-t border-hack-border bg-hack-bg/50 text-[10px] text-gray-500 font-mono text-center">
+            </div>
 
     </aside>
 
@@ -1115,7 +1102,8 @@
             branch: "main",
             currentTitle: "",
             currentFolder: "",
-            currentFilename: ""
+            currentFilename: "",
+            rootFiles: []
         };
 
         if (typeof CONFIG !== 'undefined') {
@@ -1148,7 +1136,6 @@
             if (modalSearchInput) modalSearchInput.placeholder = CONFIG.ui.searchPlaceholder;
 
             document.getElementById('label-changelog').innerText = CONFIG.ui.changelogTitle;
-            document.getElementById('label-root-readme').innerText = CONFIG.ui.rootReadmeTitle;
             document.getElementById('label-initializing').innerText = CONFIG.ui.initializingText;
             document.getElementById('label-join-us').innerText = CONFIG.ui.joinUsTitle;
             document.getElementById('label-on-this-page').innerText = CONFIG.ui.onThisPageTitle;
@@ -1164,9 +1151,9 @@
                 changelogBtn.style.display = CONFIG.features.showChangelog ? 'flex' : 'none';
             }
 
-            const rootReadmeBtn = document.getElementById('btn-root-readme');
-            if (rootReadmeBtn) {
-                rootReadmeBtn.style.display = CONFIG.features.showRootReadme ? 'flex' : 'none';
+            const rootReadmeContainer = document.getElementById('root-readme-container');
+            if (rootReadmeContainer) {
+                rootReadmeContainer.style.display = CONFIG.features.showRootReadme ? 'block' : 'none';
             }
 
             const searchTrigger = document.querySelector('[onclick="openSearch()"]');
@@ -1431,6 +1418,13 @@
                 debugLog('[AcidWiki] ✅ Wiki structure loaded successfully');
                 STATE.wikiData = structure;
 
+                if (CONFIG.features.showRootReadme) {
+                    if (!STATE.rootFiles) STATE.rootFiles = [];
+                    if (!STATE.rootFiles.some(f => f.filename.toLowerCase().endsWith('readme.md'))) {
+                        STATE.rootFiles.unshift({ title: CONFIG.ui.rootReadmeTitle, filename: 'README.md' });
+                    }
+                    STATE.expandedSections.add('ROOT_SECTION');
+                }
                 const firstFolder = Object.keys(STATE.wikiData)[0];
                 if (firstFolder) STATE.expandedSections.add(firstFolder);
 
@@ -1476,25 +1470,43 @@
                     const data = await res.json();
                     const structure = {};
                     let fileCount = 0;
+                    STATE.rootFiles = [];
 
                     data.tree.forEach(item => {
-                        if (item.path.startsWith('wiki/docs/') && item.type === 'blob' && item.path.endsWith('.md')) {
-                            const relativePath = item.path.replace('wiki/docs/', '');
-                            const parts = relativePath.split('/');
+                        if (item.type === 'blob' && item.path.endsWith('.md')) {
+                            if (item.path.startsWith('wiki/docs/')) {
+                                const relativePath = item.path.replace('wiki/docs/', '');
+                                const parts = relativePath.split('/');
 
-                            let currentLevel = structure;
-                            for (let i = 0; i < parts.length - 1; i++) {
-                                const folder = parts[i];
-                                if (!currentLevel[folder]) currentLevel[folder] = {};
-                                currentLevel = currentLevel[folder];
+                                let currentLevel = structure;
+                                for (let i = 0; i < parts.length - 1; i++) {
+                                    const folder = parts[i];
+                                    if (!currentLevel[folder]) currentLevel[folder] = {};
+                                    currentLevel = currentLevel[folder];
+                                }
+
+                                const filename = parts[parts.length - 1];
+                                const title = decodeURIComponent(filename.replace(/\.md$/, '').replace(/_/g, ' '));
+                                currentLevel[title] = filename;
+                                fileCount++;
+                            } else if (!item.path.includes('/')) {
+                                const filename = item.path;
+                                let title = decodeURIComponent(filename.replace(/\.md$/, '').replace(/_/g, ' '));
+                                if (filename.toLowerCase() === 'readme.md') title = CONFIG.ui.rootReadmeTitle;
+                                STATE.rootFiles.push({ title, filename });
                             }
-
-                            const filename = parts[parts.length - 1];
-                            const title = decodeURIComponent(filename.replace(/\.md$/, '').replace(/_/g, ' '));
-                            currentLevel[title] = filename;
-                            fileCount++;
                         }
                     });
+
+                    // Sort root files: README.md first, then alphabetical
+                    STATE.rootFiles.sort((a, b) => {
+                        const aName = a.filename.toLowerCase();
+                        const bName = b.filename.toLowerCase();
+                        if (aName === 'readme.md' || aName.endsWith('/readme.md')) return -1;
+                        if (bName === 'readme.md' || bName.endsWith('/readme.md')) return 1;
+                        return a.title.localeCompare(b.title);
+                    });
+
 
                     // Sort folders and files recursively
                     function sortStructure(obj) {
@@ -1649,6 +1661,46 @@
                     debugLog(`[AcidWiki] 📊 Structure for "${path || 'root'}":`, Object.keys(parentStructure));
                 }
 
+                // Scan root for .md files
+                try {
+                    const rootRes = await fetch('./');
+                    if (rootRes.ok) {
+                        const rootHtml = await rootRes.text();
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(rootHtml, 'text/html');
+                        const links = doc.querySelectorAll('a');
+                        STATE.rootFiles = [];
+                        links.forEach(link => {
+                            let href = link.getAttribute('href');
+                            if (!href || href.startsWith('..') || href.startsWith('/') || href.includes(':')) return;
+
+                            // Clean href
+                            href = href.split('?')[0].split('#')[0];
+                            if (href.startsWith('./')) href = href.substring(2);
+
+                            if (href.endsWith('.md') && !href.includes('/')) {
+                                let title = decodeURIComponent(href.replace(/\.md$/, '').replace(/_/g, ' '));
+                                if (href.toLowerCase() === 'readme.md') title = CONFIG.ui.rootReadmeTitle;
+                                if (!STATE.rootFiles.some(f => f.filename === href)) {
+                                    STATE.rootFiles.push({ title, filename: href });
+                                    debugLog(`[AcidWiki] 📄 Found root file: ${href}`);
+                                }
+                            }
+                        });
+                        // Sort root files: README.md first
+                        STATE.rootFiles.sort((a, b) => {
+                            const aName = a.filename.toLowerCase();
+                            const bName = b.filename.toLowerCase();
+                            if (aName === 'readme.md') return -1;
+                            if (bName === 'readme.md') return 1;
+                            return a.title.localeCompare(b.title);
+                        });
+                    }
+                } catch (e) {
+                    debugLog('[AcidWiki] ⚠️ Failed to scan root for .md files');
+                }
+
+
                 // Start recursive scanning from root
                 await scanFolder();
 
@@ -1689,16 +1741,20 @@
                 const found = flatList.find(item => `${item.folder}/${item.file}` === pageParam || item.file === pageParam);
 
                 if (found) {
-                    loadContent(found.folder, found.title, found.file, false);
+                    loadContent(found.folder, found.title, found.file, false, found.folder === '');
                     // Expand all parent folders
-                    const parts = found.folder.split('/');
-                    let current = "";
-                    parts.forEach(p => {
-                        if (p) {
-                            current = current ? `${current}/${p}` : p;
-                            STATE.expandedSections.add(current);
-                        }
-                    });
+                    if (found.folder === '') {
+                        STATE.expandedSections.add('ROOT_SECTION');
+                    } else {
+                        const parts = found.folder.split('/');
+                        let current = "";
+                        parts.forEach(p => {
+                            if (p) {
+                                current = current ? `${current}/${p}` : p;
+                                STATE.expandedSections.add(current);
+                            }
+                        });
+                    }
                     renderSidebar();
                 } else {
                     loadDefault();
@@ -1740,25 +1796,26 @@
 
             indexRecursive(STATE.wikiData);
 
-            // 2. --- MANUAL INDEXING OF ROOT README ---
-            if (CONFIG.features.showRootReadme) {
-                promises.push(
-                    fetch('README.md')
-                        .then(res => { if (!res.ok) return ''; return res.text(); })
-                        .then(text => {
-                            if (!text) return;
-                            // On l'ajoute manuellement à l'index
-                            STATE.searchIndex.push({
-                                folder: '', // Racine
-                                title: CONFIG.ui.rootReadmeTitle || "Project Home",
-                                filename: 'README.md',
-                                content: text.toLowerCase(),
-                                titleLower: (CONFIG.ui.rootReadmeTitle || "Project Home").toLowerCase()
-                            });
-                            debugLog("[AcidWiki] 🔍 Root README indexed.");
-                        })
-                        .catch(e => console.warn("[AcidWiki] Failed to index README.md", e))
-                );
+            // 2. --- INDEXING OF ROOT MD FILES ---
+            if (CONFIG.features.showRootReadme && STATE.rootFiles) {
+                STATE.rootFiles.forEach(file => {
+                    promises.push(
+                        fetch(file.filename)
+                            .then(res => { if (!res.ok) return ''; return res.text(); })
+                            .then(text => {
+                                if (!text) return;
+                                STATE.searchIndex.push({
+                                    folder: '',
+                                    title: file.title,
+                                    filename: file.filename,
+                                    content: text.toLowerCase(),
+                                    titleLower: file.title.toLowerCase()
+                                });
+                                debugLog(`[AcidWiki] 🔍 Root file indexed: ${file.filename}`);
+                            })
+                            .catch(e => console.warn(`[AcidWiki] Failed to index ${file.filename}`, e))
+                    );
+                });
             }
 
             // 3. --- CHANGELOG INDEXING (API) ---
@@ -1790,6 +1847,12 @@
 
         function getFlatPageList() {
             const flatList = [];
+            // Add root files first
+            if (STATE.rootFiles) {
+                STATE.rootFiles.forEach(file => {
+                    flatList.push({ folder: '', title: file.title, file: file.filename });
+                });
+            }
             function traverse(data, currentPath = '') {
                 for (const [key, value] of Object.entries(data)) {
                     if (typeof value === 'object' && value !== null) {
@@ -2010,9 +2073,9 @@
                 }
 
                 if (CONFIG.features.autoCollapseSidebar) {
-                    STATE.expandedSections = new Set([folder]);
+                    STATE.expandedSections = new Set([folder || 'ROOT_SECTION']);
                 } else {
-                    STATE.expandedSections.add(folder);
+                    STATE.expandedSections.add(folder || 'ROOT_SECTION');
                 }
                 renderSidebar();
 
@@ -2392,8 +2455,50 @@
         function renderSidebar(searchResults = null) {
             const container = document.getElementById('nav-container');
             const noResults = document.getElementById('search-results-msg');
+
             container.innerHTML = '';
+            debugLog("[AcidWiki] 📂 Rendering sidebar. Root files:", STATE.rootFiles);
             let hasContent = false;
+
+            // Render Root Section (Project Home)
+            if (CONFIG.features.showRootReadme && STATE.rootFiles && STATE.rootFiles.length > 0) {
+                const isExpanded = STATE.expandedSections.has('ROOT_SECTION') || searchResults;
+                const group = document.createElement('div');
+                group.className = `nav-group mb-1`;
+
+                const btn = document.createElement('button');
+                btn.className = `section-header w-full flex items-center justify-between px-2 py-2 text-gray-500 hover:text-hack-heading transition-colors rounded hover:bg-hack-bg focus:outline-none focus:bg-hack-bg ${isExpanded ? 'active' : ''}`;
+                btn.innerHTML = `
+                    <span class="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest font-mono text-hack-green"><i data-lucide="home" class="w-3 h-3"></i> ${CONFIG.ui.rootReadmeTitle}</span>
+                    <i data-lucide="chevron-right" class="section-arrow w-3 h-3 transition-transform"></i>
+                `;
+                btn.onclick = () => {
+                    if (STATE.expandedSections.has('ROOT_SECTION')) STATE.expandedSections.delete('ROOT_SECTION');
+                    else STATE.expandedSections.add('ROOT_SECTION');
+                    renderSidebar(searchResults);
+                };
+
+                const list = document.createElement('div');
+                list.className = `nav-list ${isExpanded ? 'expanded' : 'collapsed'}`;
+
+                STATE.rootFiles.forEach(file => {
+                    const link = document.createElement('a');
+                    link.href = `?page=${file.filename}`;
+                    const isActive = STATE.currentFolder === '' && STATE.currentFilename === file.filename;
+                    link.className = `nav-link group flex items-center gap-3 px-2 py-1.5 rounded-md text-sm font-medium text-gray-400 hover:text-hack-heading hover:bg-hack-bg transition-all outline-none focus:bg-hack-bg ${isActive ? 'active' : ''}`;
+                    link.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-hack-border group-hover:bg-hack-green flex-shrink-0 transition-colors"></span> ${file.title}`;
+                    link.onclick = (e) => {
+                        e.preventDefault();
+                        loadContent('', file.title, file.filename, true, true);
+                    };
+                    list.appendChild(link);
+                });
+
+                group.appendChild(btn);
+                group.appendChild(list);
+                container.appendChild(group);
+                hasContent = true;
+            }
 
             function renderRecursive(data, parentContainer, currentPath = '', level = 0) {
                 Object.keys(data).forEach(key => {
