@@ -1103,7 +1103,8 @@
             currentTitle: "",
             currentFolder: "",
             currentFilename: "",
-            rootFiles: []
+            rootFiles: [],
+            originalRootLabel: null
         };
 
         if (typeof CONFIG !== 'undefined') {
@@ -1155,6 +1156,10 @@
             if (rootReadmeContainer) {
                 rootReadmeContainer.style.display = CONFIG.features.showRootReadme ? 'block' : 'none';
             }
+
+            // Preserve original Project Home label so we can temporarily replace it with README H1
+            const rootLabelEl = document.getElementById('label-root-readme');
+            if (rootLabelEl) STATE.originalRootLabel = rootLabelEl.innerText;
 
             const searchTrigger = document.querySelector('[onclick="openSearch()"]');
             if (searchTrigger) {
@@ -2048,7 +2053,18 @@
                     } catch (e) { console.warn("LocalStorage full"); }
                 }
 
-                const cleanHTML = DOMPurify.sanitize(marked.parse(text));
+                // Store raw text for TOC detection (before conversion)
+                viewer.dataset.rawText = text;
+
+                // Replace wikilinks in the text with markdown links (using global resolver)
+                const textWithLinks = text.replace(/\[\[([^\]]+)\]\]/g, (m, inner) => {
+                    try {
+                        const resolved = resolveWikilink(inner);
+                        return `[${resolved.title}](${resolved.href})`;
+                    } catch (e) { return inner; }
+                });
+
+                const cleanHTML = DOMPurify.sanitize(marked.parse(textWithLinks));
                 viewer.innerHTML = cleanHTML;
 
                 // Update SEO Tags
@@ -2064,6 +2080,46 @@
                 fetchLastUpdated(folder, filename);
 
                 enhanceMarkdownContent();
+
+                // Prefer H1 as authoritative page title and update UI labels
+                try {
+                    const firstH1 = viewer.querySelector('h1');
+                    if (firstH1 && firstH1.textContent && firstH1.textContent.trim().length > 0) {
+                        const h1Text = firstH1.textContent.trim();
+                        title = h1Text;
+                        STATE.currentTitle = title;
+
+                        const onThis = document.getElementById('label-on-this-page');
+                        const mobileToc = document.getElementById('label-mobile-toc');
+                        if (onThis) onThis.innerText = title;
+                        if (mobileToc) mobileToc.innerText = title;
+
+                        // Update root 'Project Home' button label when loading root README
+                        const rootLabelEl = document.getElementById('label-root-readme');
+                        if (isRoot && rootLabelEl) {
+                            // store original if not stored already
+                            if (!STATE.originalRootLabel) STATE.originalRootLabel = rootLabelEl.innerText;
+                            rootLabelEl.innerText = title;
+                        } else if (!isRoot && STATE.originalRootLabel && rootLabelEl) {
+                            // restore original label when leaving root
+                            rootLabelEl.innerText = STATE.originalRootLabel;
+                        }
+
+                        // Update SEO titles
+                        const fullTitleH1 = `${title} | ${CONFIG.projectName}`;
+                        document.title = fullTitleH1;
+                        document.getElementById('og-title').content = fullTitleH1;
+                        document.getElementById('tw-title').content = fullTitleH1;
+
+                        // Update breadcrumbs last visible title
+                        const crumbs = document.getElementById('breadcrumbs');
+                        if (crumbs) {
+                            const last = crumbs.querySelector('.text-hack-green.font-bold');
+                            if (last) last.textContent = title;
+                        }
+                    }
+                } catch (e) { console.warn('H1 detection error', e); }
+
                 generateTOC();
                 renderPagination(folder, title);
 
@@ -2359,6 +2415,75 @@
             desktopToc.innerHTML = '';
             mobileToc.innerHTML = '';
 
+            // If headings are present, check for an Obsidian-style TOC in raw markdown
+            const raw = (document.getElementById('markdown-viewer')?.dataset?.rawText) || '';
+            const lowerRaw = raw.toLowerCase();
+
+            // Detect explicit [[toc]] or a '## Table of Contents' heading followed by list items
+            if (lowerRaw.includes('[[toc]]') || /##\s*table of contents/i.test(raw)) {
+                // Try to extract list items after the TOC marker
+                let lines = raw.split(/\r?\n/);
+                let tocStart = -1;
+
+                // Find [[toc]] or '## Table of Contents'
+                for (let i = 0; i < lines.length; i++) {
+                    if (lines[i].toLowerCase().includes('[[toc]]') || /^##\s*table of contents/i.test(lines[i])) {
+                        tocStart = i + 1;
+                        break;
+                    }
+                }
+
+                const tocEntries = [];
+                if (tocStart >= 0) {
+                    for (let j = tocStart; j < lines.length; j++) {
+                        const line = lines[j].trim();
+                        if (!line) break;
+                        // support markdown list items: - [[Page]] or - [Title](url)
+                        const mWikilink = line.match(/\[\[([^\]]+)\]\]/);
+                        const mMdLink = line.match(/\[(.*?)\]\((.*?)\)/);
+                        if (mWikilink) {
+                            const resolved = resolveWikilink(mWikilink[1]);
+                            tocEntries.push({ href: resolved.href, text: resolved.title });
+                        } else if (mMdLink) {
+                            tocEntries.push({ href: mMdLink[2], text: mMdLink[1] });
+                        } else {
+                            // fallback plain text as anchor to first matching heading
+                            const plain = line.replace(/^-\s*/,'').trim();
+                            if (plain) {
+                                // try to match heading id
+                                const h = Array.from(headings).find(hh => hh.textContent.trim().toLowerCase().startsWith(plain.toLowerCase()));
+                                if (h) tocEntries.push({ href: `#${h.id}`, text: plain });
+                            }
+                        }
+                    }
+                }
+
+                if (tocEntries.length > 0) {
+                    tocEntries.forEach(e => {
+                        const li = document.createElement('li');
+                        const a = document.createElement('a');
+                        a.className = 'toc-link block py-1 pl-2 border-l-2 border-transparent hover:text-hack-green transition-colors truncate';
+                        a.textContent = e.text;
+                        a.href = e.href;
+                        a.onclick = (ev) => {
+                            ev.preventDefault();
+                            if (e.href.startsWith('#')) {
+                                const id = e.href.substring(1);
+                                const target = document.getElementById(id);
+                                if (target) target.scrollIntoView({ behavior: 'smooth' });
+                            } else {
+                                // external or page link
+                                window.location.href = e.href;
+                            }
+                        };
+                        desktopToc.appendChild(li).appendChild(a);
+                        mobileToc.appendChild(li.cloneNode(true));
+                    });
+                    setTimeout(updateTOCActiveState, 100);
+                    return;
+                }
+            }
+
             if (headings.length === 0) {
                 desktopToc.innerHTML = `<li class="text-gray-600 italic">${CONFIG.ui.noSectionsText}</li>`;
                 mobileToc.innerHTML = `<li class="text-gray-600 italic text-center py-4">${CONFIG.ui.noSectionsText}</li>`;
@@ -2452,6 +2577,37 @@
         }
 
         // --- 6. SIDEBAR ---
+        // Helper: resolve Obsidian-style wikilinks to page href/title using the flat index
+        function resolveWikilink(target) {
+            const flat = getFlatPageList();
+            let display = null;
+            let link = target.trim();
+            if (link.includes('|')) {
+                const parts = link.split('|');
+                link = parts[0].trim();
+                display = parts[1].trim();
+            }
+            let anchor = '';
+            if (link.includes('#')) {
+                const parts = link.split('#');
+                link = parts[0];
+                anchor = parts.slice(1).join('#');
+            }
+            const norm = link.replace(/\.md$/i, '').replace(/_/g, ' ').trim();
+
+            const found = flat.find(f => f.title && f.title.toLowerCase() === norm.toLowerCase())
+                || flat.find(f => f.file && f.file.replace(/\.md$/i,'').toLowerCase() === norm.toLowerCase())
+                || flat.find(f => (`${f.folder}/${f.file}`).toLowerCase() === norm.toLowerCase());
+
+            if (found) {
+                const pageParam = found.folder ? `${found.folder}/${found.file}` : found.file;
+                const href = `?page=${pageParam}${anchor ? `#${encodeURIComponent(anchor)}` : ''}`;
+                return { href, title: display || found.title };
+            }
+
+            const fallbackHref = `./${link.replace(/ /g, '_')}.md${anchor ? `#${encodeURIComponent(anchor)}` : ''}`;
+            return { href: fallbackHref, title: display || link };
+        }
         function renderSidebar(searchResults = null) {
             const container = document.getElementById('nav-container');
             const noResults = document.getElementById('search-results-msg');
