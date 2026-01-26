@@ -15,69 +15,81 @@
     --pydata-border-glass: rgba(0, 0, 0, 0.08);
 }
 
-/* --- Inline Editor Buttons --- */
-.py-btn-container {
-    position: absolute;
-    left: 50%;
-    top: -30px;
-    /* Positionné au-dessus du bloc ```python */
-    z-index: 1000;
-    display: flex;
-    gap: 6px;
-    background: var(--pydata-bg-glass);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    padding: 6px;
-    border-radius: 10px;
-    border: 1px solid var(--pydata-border-glass);
-    box-shadow: var(--pydata-shadow);
-    opacity: 1;
-    animation: scaleIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-    transform: translateX(-50%);
-    pointer-events: auto;
+/* --- Reading Mode Code Wrapper --- */
+.py-code-wrapper {
+    position: relative;
 }
 
-@keyframes scaleIn {
-    from {
-        opacity: 0;
-        transform: translateX(-50%) scale(0.8);
-    }
-
-    to {
-        opacity: 1;
-        transform: translateX(-50%) scale(1);
-    }
-}
-
-/* Reading Mode Specifics */
+/* --- Reading Mode: Buttons inside the code block, top center --- */
 .py-reading-mode {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
     opacity: 0;
     transition: opacity 0.2s ease;
+    z-index: 10;
 }
 
 .py-code-wrapper:hover .py-reading-mode {
     opacity: 1;
 }
 
-/* On affiche le bouton quand on survol la ligne CM6 qui le contient */
-.cm-line:hover .py-btn-container,
-.py-btn-container:hover {
-    opacity: 1;
+/* --- Edit Mode: Widget wrapper --- */
+/* Position buttons inside the code block, at top center */
+.cm-line:has(.py-btn-wrapper) {
+    position: relative;
+    z-index: 10;
+}
+
+.py-btn-wrapper {
+    position: absolute;
+    top: 0px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 100;
+    pointer-events: none;
+}
+
+.py-btn-container.py-reading-mode {
+    top: 0px;
+}
+/* Edit Mode: Container positioned to appear at top center of the code block */
+.py-btn-wrapper .py-btn-container {
+    position: relative;
+    z-index: 100;
+    white-space: nowrap;
+    pointer-events: auto;
+}
+
+/* --- Common Button Container --- */
+.py-btn-container {
+    display: inline-flex;
+    justify-content: center;
+    gap: 6px;
+    background: var(--pydata-bg-glass);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    padding: 4px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--pydata-border-glass);
+    box-shadow: var(--pydata-shadow);
+    pointer-events: auto;
 }
 
 .py-run-btn,
 .py-studio-btn {
     border: none;
     font-weight: 600;
-    padding: 6px 14px;
-    border-radius: 8px;
+    padding: 4px 10px;
+    border-radius: 6px;
     cursor: pointer;
-    font-size: 11px;
+    font-size: 10px;
     transition: all 0.2s ease;
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 6px;
-    height: 24px;
+    gap: 4px;
+    height: 22px;
 }
 
 .py-run-btn {
@@ -98,6 +110,17 @@
 .py-studio-btn:hover {
     background-color: var(--pydata-accent-hover);
     transform: scale(1.05);
+}
+
+.py-btn-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.py-btn-icon svg {
+    width: 12px;
+    height: 12px;
 }
 
 /* --- Studio Layout --- */
@@ -180,7 +203,7 @@
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     display: flex;
     flex-direction: column;
-    overflow: visible;
+    overflow: hidden;
 }
 
 .ds-code-card:hover {
@@ -199,6 +222,7 @@
     padding: 8px 12px;
     background: var(--background-secondary);
     border-bottom: 1px solid var(--pydata-border-glass);
+    border-radius: calc(var(--pydata-radius) - 1px) calc(var(--pydata-radius) - 1px) 0 0;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -229,7 +253,12 @@
 /* --- Editor Area --- */
 .ds-card-editor-wrapper {
     background: var(--code-background);
-    border-top: 1px solid var(--pydata-border-glass);
+    border-radius: 0 0 calc(var(--pydata-radius) - 1px) calc(var(--pydata-radius) - 1px);
+}
+
+.ds-card-editor-wrapper .cm-editor {
+    background: transparent;
+    border-radius: 0 0 calc(var(--pydata-radius) - 1px) calc(var(--pydata-radius) - 1px);
 }
 
 .cm-editor {
@@ -515,6 +544,64 @@
     background: rgba(46, 204, 113, 0.05);
 }
 
+/* Variable list animations */
+.ds-var-table tbody tr {
+    transition: all 0.3s ease;
+}
+
+.ds-var-new {
+    animation: varSlideIn 0.4s ease-out;
+    background: rgba(46, 204, 113, 0.15) !important;
+}
+
+@keyframes varSlideIn {
+    from {
+        opacity: 0;
+        transform: translateX(-20px);
+        background: rgba(46, 204, 113, 0.3);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+        background: rgba(46, 204, 113, 0.15);
+    }
+}
+
+.ds-var-removing {
+    animation: varSlideOut 0.3s ease-in forwards;
+}
+
+@keyframes varSlideOut {
+    from {
+        opacity: 1;
+        transform: translateX(0);
+    }
+    to {
+        opacity: 0;
+        transform: translateX(20px);
+        height: 0;
+        padding: 0;
+        margin: 0;
+    }
+}
+
+.ds-var-updated {
+    animation: varPulse 0.5s ease;
+}
+
+@keyframes varPulse {
+    0% { background: transparent; }
+    30% { background: rgba(125, 95, 255, 0.2); }
+    100% { background: transparent; }
+}
+
+.ds-var-loading {
+    text-align: center;
+    padding: 8px;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
 .ds-btn-confirm {
     color: var(--pydata-success);
 }
@@ -699,4 +786,2596 @@
 .ds-btn-split.is-active {
     background: var(--pydata-accent);
     color: white;
+}
+
+/* ====================================
+   DataFrame Viewer Modal Styles
+   ==================================== */
+
+.df-viewer-modal {
+    padding: 0 !important;
+    max-width: 95vw !important;
+    max-height: 90vh !important;
+    width: 1200px;
+    min-width: 400px;
+    min-height: 300px;
+    display: flex;
+    flex-direction: column;
+    background: var(--background-primary);
+    border-radius: var(--pydata-radius);
+    overflow: hidden;
+    border: 1px solid var(--pydata-border-glass);
+    box-shadow: var(--pydata-shadow);
+    /* Enable resize */
+    resize: both !important;
+    overflow: auto !important;
+}
+
+/* Resize handle visual enhancement */
+.df-viewer-modal::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    width: 20px;
+    height: 20px;
+    background: linear-gradient(135deg, transparent 50%, var(--pydata-accent) 50%);
+    border-radius: 0 0 var(--pydata-radius) 0;
+    cursor: nwse-resize;
+    opacity: 0.5;
+    transition: opacity 0.2s ease;
+}
+
+.df-viewer-modal:hover::after {
+    opacity: 0.8;
+}
+
+.df-viewer-modal.df-fullscreen {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: 100vh !important;
+    max-height: 100vh !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    z-index: 9999;
+    resize: none !important;
+}
+
+.df-viewer-modal.df-fullscreen::after {
+    display: none;
+}
+
+/* Resize Handles */
+.df-resize-handle {
+    position: absolute;
+    bottom: 0;
+    right: 0;
+    width: 20px;
+    height: 20px;
+    cursor: nwse-resize;
+    z-index: 100;
+    background: linear-gradient(135deg, transparent 50%, var(--pydata-accent) 50%);
+    border-radius: 0 0 var(--pydata-radius) 0;
+    opacity: 0.6;
+    transition: opacity 0.2s ease;
+}
+
+.df-resize-handle:hover {
+    opacity: 1;
+}
+
+.df-resize-edge {
+    position: absolute;
+    z-index: 99;
+    background: transparent;
+}
+
+.df-resize-right {
+    top: 0;
+    right: 0;
+    width: 6px;
+    height: 100%;
+    cursor: ew-resize;
+}
+
+.df-resize-bottom {
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: 6px;
+    cursor: ns-resize;
+}
+
+.df-resize-edge:hover {
+    background: var(--pydata-accent);
+    opacity: 0.3;
+}
+
+.df-viewer-modal.df-fullscreen .df-resize-handle,
+.df-viewer-modal.df-fullscreen .df-resize-edge {
+    display: none;
+}
+
+.df-header {
+    padding: 16px 20px;
+    background: linear-gradient(135deg, var(--pydata-accent) 0%, #6a3de8 100%);
+    color: white;
+    border-bottom: 1px solid var(--pydata-border-glass);
+}
+
+.df-title-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.df-title {
+    margin: 0;
+    font-size: 1.3em;
+    font-weight: 700;
+    color: white;
+}
+
+.df-header-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.df-btn-icon {
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    border-radius: 8px;
+    padding: 6px 8px;
+    cursor: pointer;
+    color: white;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.df-btn-icon:hover {
+    background: rgba(255, 255, 255, 0.3);
+    transform: scale(1.05);
+}
+
+.df-btn-close:hover {
+    background: var(--pydata-error);
+}
+
+.df-stats-row {
+    display: flex;
+    gap: 20px;
+    font-size: 0.9em;
+    opacity: 0.9;
+}
+
+.df-stat {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* Toolbar */
+.df-toolbar {
+    padding: 12px 20px;
+    background: var(--background-secondary);
+    border-bottom: 1px solid var(--pydata-border-glass);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+}
+
+.df-search-group {
+    display: flex;
+    align-items: center;
+    background: var(--background-primary);
+    border: 1px solid var(--pydata-border-glass);
+    border-radius: 8px;
+    padding: 0 10px;
+    flex: 1;
+    min-width: 200px;
+    max-width: 300px;
+}
+
+.df-search-icon {
+    color: var(--text-muted);
+    margin-right: 8px;
+}
+
+.df-search-input {
+    border: none;
+    background: transparent;
+    padding: 8px 0;
+    flex: 1;
+    color: var(--text-normal);
+    font-size: 13px;
+}
+
+.df-search-input:focus {
+    outline: none;
+}
+
+.df-pagesize-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+.df-select {
+    background: var(--background-primary);
+    border: 1px solid var(--pydata-border-glass);
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: var(--text-normal);
+    cursor: pointer;
+}
+
+.df-tools-group {
+    display: flex;
+    gap: 6px;
+}
+
+.df-btn-tool {
+    background: var(--background-modifier-border);
+    border: none;
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--text-normal);
+    transition: all 0.2s ease;
+}
+
+.df-btn-tool:hover {
+    background: var(--pydata-accent);
+    color: white;
+}
+
+.df-export-group {
+    display: flex;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.df-btn-export {
+    background: var(--background-primary);
+    border: 1px solid var(--pydata-border-glass);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.2s ease;
+}
+
+.df-btn-export:hover {
+    border-color: var(--pydata-accent);
+    color: var(--pydata-accent);
+}
+
+/* Table */
+.df-table-container {
+    flex: 1;
+    overflow: auto;
+    padding: 0;
+    background: var(--background-primary);
+}
+
+.df-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+    font-family: var(--pydata-font-mono);
+}
+
+.df-table thead {
+    position: sticky;
+    top: 0;
+    background: var(--background-secondary);
+    z-index: 10;
+}
+
+.df-th {
+    padding: 10px 12px;
+    text-align: left;
+    font-weight: 600;
+    border-bottom: 2px solid var(--pydata-border-glass);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.2s ease;
+}
+
+.df-th:hover {
+    background: var(--background-modifier-hover);
+}
+
+.df-th-content {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.df-sort-icon {
+    color: var(--pydata-accent);
+}
+
+.df-th-index {
+    padding: 10px 12px;
+    text-align: center;
+    font-weight: 600;
+    border-bottom: 2px solid var(--pydata-border-glass);
+    background: var(--background-secondary);
+    color: var(--text-muted);
+    width: 60px;
+}
+
+.df-type-badge {
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    display: block;
+    margin-top: 2px;
+}
+
+.df-type-int {
+    background: rgba(52, 152, 219, 0.15);
+    color: #3498db;
+}
+
+.df-type-float {
+    background: rgba(46, 204, 113, 0.15);
+    color: #2ecc71;
+}
+
+.df-type-str {
+    background: rgba(230, 126, 34, 0.15);
+    color: #e67e22;
+}
+
+.df-type-bool {
+    background: rgba(155, 89, 182, 0.15);
+    color: #9b59b6;
+}
+
+.df-type-date {
+    background: rgba(241, 196, 15, 0.15);
+    color: #f1c40f;
+}
+
+.df-td {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--pydata-border-glass);
+}
+
+.df-td-index {
+    padding: 8px 12px;
+    text-align: center;
+    border-bottom: 1px solid var(--pydata-border-glass);
+    color: var(--text-muted);
+    background: var(--background-secondary);
+}
+
+.df-null {
+    color: var(--pydata-error);
+    font-style: italic;
+    opacity: 0.7;
+}
+
+.df-cell-int {
+    color: #3498db;
+}
+
+.df-cell-float {
+    color: #2ecc71;
+}
+
+.df-cell-str {
+    color: var(--text-normal);
+}
+
+.df-cell-bool {
+    color: #9b59b6;
+}
+
+.df-empty-cell {
+    text-align: center;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 40px !important;
+}
+
+/* Pagination */
+.df-pagination {
+    padding: 12px 20px;
+    background: var(--background-secondary);
+    border-top: 1px solid var(--pydata-border-glass);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+}
+
+.df-btn-page {
+    background: var(--background-primary);
+    border: 1px solid var(--pydata-border-glass);
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+    color: var(--text-normal);
+    transition: all 0.2s ease;
+}
+
+.df-btn-page:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.df-btn-page:not(:disabled):hover {
+    background: var(--pydata-accent);
+    color: white;
+    border-color: var(--pydata-accent);
+}
+
+.df-page-info {
+    font-weight: 600;
+    color: var(--text-normal);
+}
+
+.df-row-info {
+    color: var(--text-muted);
+    font-size: 0.9em;
+}
+
+/* Console resizer */
+.df-console-resizer {
+    height: 6px;
+    background: var(--background-modifier-border);
+    cursor: ns-resize;
+    transition: background 0.2s ease;
+    position: relative;
+}
+
+.df-console-resizer::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 40px;
+    height: 3px;
+    background: var(--text-muted);
+    border-radius: 2px;
+    opacity: 0.3;
+}
+
+.df-console-resizer:hover,
+.df-console-resizer.df-resizing {
+    background: var(--pydata-accent);
+}
+
+.df-console-resizer:hover::after,
+.df-console-resizer.df-resizing::after {
+    background: white;
+    opacity: 0.8;
+}
+
+/* Console area */
+.df-console-area {
+    border-top: 1px solid var(--pydata-border-glass);
+    background: var(--background-secondary);
+    min-height: 200px;
+    height: 250px;
+    display: flex;
+    flex-direction: column;
+    transition: height 0.2s ease;
+}
+
+.df-console-area.df-console-expanded {
+    height: 450px;
+}
+
+.df-console-header {
+    padding: 10px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--background-modifier-border);
+    flex-shrink: 0;
+    background: var(--background-secondary);
+}
+
+.df-console-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.df-console-title {
+    font-weight: 700;
+    font-size: 12px;
+    color: var(--text-normal);
+    letter-spacing: 0.3px;
+}
+
+/* Mini button - Universal style */
+.df-btn-mini {
+    font-size: 11px;
+    padding: 5px 12px;
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--text-normal);
+    transition: all 0.2s ease;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.df-btn-mini:hover {
+    background: var(--background-modifier-hover);
+    border-color: var(--pydata-accent);
+    transform: translateY(-1px);
+}
+
+.df-btn-mini.df-btn-active {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
+}
+
+.df-btn-mini.df-btn-active:hover {
+    filter: brightness(1.1);
+    transform: translateY(-1px);
+}
+
+.df-btn-mini .svg-icon {
+    width: 14px;
+    height: 14px;
+    opacity: 0.9;
+}
+
+.df-console-output {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+    font-family: var(--pydata-font-mono);
+    font-size: 12px;
+    min-height: 80px;
+    background: var(--background-primary);
+}
+
+/* Console input area */
+.df-console-input-area {
+    display: flex;
+    align-items: center;
+    padding: 8px 16px;
+    border-top: 1px solid var(--pydata-border-glass);
+    background: var(--background-primary);
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.df-console-input-prompt {
+    font-family: var(--pydata-font-mono);
+    font-size: 13px;
+    font-weight: bold;
+    color: var(--pydata-accent);
+}
+
+.df-console-input {
+    flex: 1;
+    padding: 8px 12px;
+    font-family: var(--pydata-font-mono);
+    font-size: 13px;
+    border: 1px solid var(--pydata-border-glass);
+    border-radius: 8px;
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    transition: all 0.2s ease;
+}
+
+.df-console-input:focus {
+    outline: none;
+    border-color: var(--pydata-accent);
+    box-shadow: 0 0 0 2px rgba(125, 95, 255, 0.2);
+}
+
+.df-console-input::placeholder {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.df-btn-run-cmd {
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: 8px;
+    background: var(--pydata-success);
+    color: white;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+}
+
+.df-btn-run-cmd:hover {
+    background: #27ae60;
+    transform: scale(1.05);
+}
+
+.df-btn-run-cmd:active {
+    transform: scale(0.95);
+}
+
+.df-console-entry {
+    margin-bottom: 8px;
+    color: var(--text-normal);
+    padding: 6px 8px;
+    border-radius: 6px;
+    position: relative;
+    transition: background 0.2s ease;
+}
+
+.df-console-entry:hover {
+    background: var(--background-modifier-hover);
+}
+
+.df-console-error {
+    background: rgba(255, 71, 87, 0.1);
+    border-left: 3px solid var(--pydata-error);
+}
+
+.df-console-error-text {
+    color: var(--pydata-error);
+}
+
+.df-console-command {
+    background: rgba(125, 95, 255, 0.08);
+    border-left: 3px solid var(--pydata-accent);
+    padding: 8px 12px;
+}
+
+.df-console-table {
+    background: var(--background-secondary);
+    border-radius: 8px;
+    padding: 0;
+    overflow: hidden;
+}
+
+.df-console-time {
+    color: var(--text-muted);
+    font-size: 10px;
+}
+
+.df-console-cmd-container {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-top: 4px;
+}
+
+.df-console-prompt {
+    color: var(--pydata-success);
+    font-weight: bold;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+.df-console-code {
+    color: var(--code-normal);
+    background: transparent;
+    white-space: pre-wrap;
+    word-break: break-word;
+    flex: 1;
+}
+
+.df-console-table-container {
+    position: relative;
+    margin-top: 6px;
+}
+
+.df-console-pre {
+    margin: 0;
+    padding: 12px;
+    background: var(--code-background);
+    border-radius: 6px;
+    overflow-x: auto;
+    max-height: 400px;
+}
+
+.df-console-table-output {
+    font-family: var(--pydata-font-mono);
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--code-normal);
+    white-space: pre;
+}
+
+/* Single copy button for entries/commands - icon only */
+.df-console-entry > .df-console-copy-btn,
+.df-console-cmd-container > .df-console-copy-btn {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 26px;
+    height: 26px;
+    padding: 4px;
+    background: var(--background-modifier-border);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.2s ease, background 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.df-console-entry:hover > .df-console-copy-btn,
+.df-console-cmd-container:hover > .df-console-copy-btn {
+    opacity: 1;
+}
+
+.df-console-entry > .df-console-copy-btn:hover,
+.df-console-cmd-container > .df-console-copy-btn:hover {
+    background: var(--pydata-accent);
+    color: white;
+}
+
+/* Edit mode styles */
+.df-edit-mode .df-table td {
+    cursor: text;
+}
+
+.df-edit-mode .df-table td:hover {
+    background: rgba(125, 95, 255, 0.15);
+    outline: 2px solid var(--pydata-accent);
+}
+
+.df-cell-editing {
+    background: var(--background-primary) !important;
+    padding: 0 !important;
+}
+
+.df-cell-input {
+    width: 100%;
+    padding: 6px 8px;
+    border: 2px solid var(--pydata-accent);
+    border-radius: 4px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font-family: var(--pydata-font-mono);
+    font-size: 12px;
+}
+
+.df-cell-modified {
+    background: rgba(46, 204, 113, 0.15) !important;
+    position: relative;
+}
+
+.df-cell-modified::after {
+    content: '•';
+    position: absolute;
+    top: 2px;
+    right: 4px;
+    color: var(--pydata-success);
+    font-size: 14px;
+}
+
+/* Primary button style */
+.df-btn-primary {
+    background: var(--pydata-accent) !important;
+    color: white !important;
+}
+
+.df-btn-primary:hover {
+    background: var(--pydata-accent-hover) !important;
+}
+
+/* Edit button active state */
+.df-btn-edit.active {
+    background: var(--pydata-accent);
+    color: white;
+}
+
+/* Heatmap toggle button */
+.df-btn-heatmap.active {
+    background: linear-gradient(135deg, #3498db 0%, #e74c3c 100%);
+    color: white;
+}
+
+/* Heatmap cell coloring */
+.df-heatmap-cell {
+    transition: background-color 0.2s ease;
+}
+
+.df-heatmap-low {
+    background-color: rgba(52, 152, 219, 0.4) !important;
+    color: var(--text-normal);
+}
+
+.df-heatmap-low-med {
+    background-color: rgba(52, 152, 219, 0.2) !important;
+}
+
+.df-heatmap-mid {
+    background-color: transparent !important;
+}
+
+.df-heatmap-high-med {
+    background-color: rgba(231, 76, 60, 0.2) !important;
+}
+
+.df-heatmap-high {
+    background-color: rgba(231, 76, 60, 0.4) !important;
+    color: var(--text-normal);
+}
+
+.df-heatmap-outlier-low {
+    background-color: rgba(52, 152, 219, 0.7) !important;
+    color: white;
+    font-weight: 600;
+}
+
+.df-heatmap-outlier-high {
+    background-color: rgba(231, 76, 60, 0.7) !important;
+    color: white;
+    font-weight: 600;
+}
+
+/* Heatmap inline value styles */
+.df-heatmap-value {
+    padding: 0;
+    border-radius: 2px;
+    font-family: inherit;
+    cursor: help;
+    display: inline;
+    margin: 0;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+}
+
+.df-heatmap-enabled {
+    line-height: inherit;
+    white-space: pre;
+    font-family: var(--pydata-font-mono);
+}
+
+.df-heatmap-enabled pre {
+    white-space: pre;
+    font-family: inherit;
+}
+
+.df-heatmap-enabled code {
+    background: transparent;
+}
+
+.df-heatmap-line {
+    display: block;
+    white-space: pre;
+}
+
+.df-heatmap-excluded,
+.df-heatmap-header {
+    display: inline;
+    padding: 0;
+    margin: 0;
+}
+
+/* Copy buttons for table output - Professional UI */
+.df-console-copy-btns {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    align-items: center;
+    background: var(--background-primary);
+    padding: 10px 14px;
+    border-radius: 8px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
+    border: 1px solid var(--background-modifier-border);
+    z-index: 100;
+    max-width: calc(100% - 16px);
+}
+
+.df-console-table-container:hover .df-console-copy-btns {
+    opacity: 1;
+}
+
+/* Buttons inside copy-btns container - Clean UI with text */
+.df-console-copy-btns .df-console-copy-btn {
+    position: relative !important;
+    top: auto !important;
+    right: auto !important;
+    width: auto !important;
+    height: auto !important;
+    font-size: 12px;
+    padding: 7px 14px;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--text-normal);
+    transition: all 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    font-weight: 500;
+    opacity: 1 !important;
+}
+
+.df-console-copy-btns .df-console-copy-btn:hover {
+    background: var(--background-modifier-hover);
+    border-color: var(--pydata-accent);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.df-console-copy-btns .df-console-copy-btn .svg-icon {
+    width: 14px;
+    height: 14px;
+    opacity: 0.8;
+    flex-shrink: 0;
+}
+
+/* Styled copy button - Rainbow gradient */
+.df-console-copy-btns .df-copy-styled {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+    color: white !important;
+    border: none;
+    font-weight: 600;
+}
+
+.df-console-copy-btns .df-copy-styled:hover {
+    filter: brightness(1.1);
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%) !important;
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+/* Copy as Image button - Gradient blue-green */
+.df-console-copy-btns .df-copy-image {
+    background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+    color: white !important;
+    border: none;
+    font-weight: 600;
+}
+
+.df-console-copy-btns .df-copy-image:hover {
+    filter: brightness(1.1);
+    background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%) !important;
+    box-shadow: 0 4px 12px rgba(56, 239, 125, 0.4);
+}
+
+.df-btn-text-mini {
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.2px;
+}
+
+/* Heatmap control buttons - Toggle style */
+.df-heatmap-ctrl {
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    transition: all 0.2s ease;
+}
+
+.df-heatmap-ctrl.active {
+    background: linear-gradient(135deg, #00b894 0%, #00cec9 100%);
+    color: white !important;
+    border-color: transparent;
+    box-shadow: 0 2px 8px rgba(0, 206, 201, 0.35);
+}
+
+.df-heatmap-ctrl.active .svg-icon {
+    opacity: 1;
+}
+
+.df-heatmap-ctrl:hover:not(.active) {
+    border-color: var(--pydata-accent);
+    background: var(--background-modifier-hover);
+}
+
+.df-btn-icon-wrap {
+    display: inline-flex;
+    align-items: center;
+}
+
+.df-btn-icon-wrap .svg-icon {
+    width: 14px;
+    height: 14px;
+}
+
+.df-btn-separator {
+    width: 1px;
+    height: 18px;
+    background: var(--background-modifier-border);
+    margin: 0 4px;
+    opacity: 0.5;
+}
+
+/* Header values (no stats) - subtle styling */
+.df-heatmap-header {
+    opacity: 0.5;
+    color: var(--text-muted);
+}
+
+/* Excluded values - clear visual indication */
+.df-heatmap-excluded {
+    opacity: 0.35;
+    text-decoration: line-through;
+    cursor: pointer;
+    color: var(--text-muted);
+}
+
+.df-heatmap-excluded:hover {
+    opacity: 0.7;
+    text-decoration: none;
+}
+
+/* Clickable heatmap values */
+.df-heatmap-interactive .df-heatmap-value {
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.df-heatmap-interactive .df-heatmap-value:hover {
+    transform: scale(1.1);
+    box-shadow: 0 0 4px rgba(0,0,0,0.3);
+    z-index: 1;
+    position: relative;
+}
+
+/* Heatmap line wrapper - block with relative positioning for toggle */
+.df-heatmap-line {
+    display: block;
+    white-space: pre;
+    position: relative;
+    padding-right: 30px;
+}
+
+.df-heatmap-line.df-row-excluded {
+    opacity: 0.5;
+    background: rgba(128, 128, 128, 0.05);
+}
+
+/* Row toggle button - always visible position, shown on hover */
+.df-heatmap-row-toggle {
+    position: absolute;
+    right: 4px;
+    top: 0;
+    font-size: 10px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--background-modifier-border);
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.df-heatmap-line:hover .df-heatmap-row-toggle {
+    opacity: 0.7;
+}
+
+.df-heatmap-row-toggle:hover {
+    opacity: 1 !important;
+    background: var(--pydata-accent);
+    color: white;
+}
+
+/* Column controls - Clean minimal design */
+.df-heatmap-col-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 8px;
+    margin-bottom: 6px;
+    background: var(--background-secondary);
+    border-radius: 6px;
+    border: 1px solid var(--background-modifier-border);
+}
+
+.df-heatmap-col-toggle {
+    font-size: 10px;
+    min-width: 22px;
+    height: 18px;
+    padding: 2px 4px;
+    border-radius: 4px;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    cursor: pointer;
+    opacity: 0.8;
+    transition: all 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    font-weight: 500;
+    color: var(--text-muted);
+}
+
+.df-heatmap-col-toggle:hover {
+    opacity: 1;
+    background: var(--pydata-accent);
+    color: white;
+    border-color: var(--pydata-accent);
+    transform: scale(1.05);
+}
+
+.df-heatmap-col-toggle.excluded {
+    opacity: 0.5;
+    background: rgba(231, 76, 60, 0.15);
+    border-color: rgba(231, 76, 60, 0.3);
+    color: #e74c3c;
+}
+
+.df-heatmap-col-label {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-right: 8px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Dropdown menu - Modern design with scroll */
+.df-dropdown-menu {
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 10px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+    z-index: 10000;
+    overflow-y: auto;
+    overflow-x: hidden;
+    min-width: 200px;
+    max-width: 280px;
+    max-height: 400px;
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+}
+
+.df-dropdown-item {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    padding: 10px 14px;
+    text-align: left;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--text-normal);
+    transition: all 0.15s ease;
+    font-size: 12px;
+    gap: 8px;
+}
+
+.df-dropdown-item:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-accent);
+    padding-left: 18px;
+}
+
+.df-dropdown-separator {
+    height: 1px;
+    background: var(--background-modifier-border);
+    margin: 6px 12px;
+}
+
+.df-dropdown-header {
+    padding: 8px 14px 6px;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    background: var(--background-secondary);
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+/* Console tools section - Analysis buttons */
+.df-console-tools {
+    display: flex;
+    gap: 8px;
+    margin-left: 16px;
+}
+
+.df-console-tools .df-btn-mini {
+    font-size: 11px;
+    padding: 5px 12px;
+    font-weight: 500;
+    border-radius: 6px;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    transition: all 0.2s ease;
+}
+
+.df-console-tools .df-btn-mini:hover {
+    background: var(--pydata-accent);
+    color: white;
+    border-color: var(--pydata-accent);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(125, 95, 255, 0.3);
+}
+
+/* ========== NEW DataFrame Viewer Styles ========== */
+
+/* Toolbar sections */
+.df-toolbar-main {
+    padding: 10px 16px;
+}
+
+.df-toolbar-tools {
+    padding: 8px 16px;
+    background: var(--background-primary);
+}
+
+.df-toolbar-export {
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--pydata-border-glass);
+}
+
+.df-tool-section {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: 16px;
+}
+
+.df-section-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.df-label {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.df-display-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.df-view-group {
+    display: flex;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.df-btn-view {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 12px;
+    background: var(--background-primary);
+    border: 1px solid var(--pydata-border-glass);
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    color: var(--text-muted);
+    transition: all 0.2s ease;
+}
+
+.df-btn-view:hover {
+    background: var(--background-modifier-hover);
+    border-color: var(--pydata-accent);
+    color: var(--pydata-accent);
+}
+
+.df-btn-view.active {
+    background: var(--pydata-accent);
+    border-color: var(--pydata-accent);
+    color: white;
+}
+
+.df-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.df-checkbox {
+    cursor: pointer;
+}
+
+.df-btn-clear-search {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+}
+
+.df-btn-clear-search:hover {
+    color: var(--pydata-error);
+}
+
+/* Transposed badge */
+.df-transposed-badge {
+    font-size: 0.7em;
+    background: var(--pydata-accent);
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
+/* Stats indicators */
+.df-stat-nulls {
+    color: rgba(255, 255, 255, 0.8);
+}
+
+.df-stat-filter {
+    background: rgba(255, 255, 255, 0.2);
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.2s ease;
+}
+
+.df-stat-filter:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+/* Column header improvements */
+.df-th-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.df-th-content {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    flex: 1;
+}
+
+.df-th-name {
+    font-weight: 600;
+}
+
+.df-col-filter-btn {
+    background: transparent;
+    border: none;
+    padding: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--text-muted);
+    opacity: 0.5;
+    transition: all 0.2s ease;
+}
+
+.df-col-filter-btn:hover {
+    opacity: 1;
+    background: var(--background-modifier-hover);
+}
+
+.df-col-filter-btn.active {
+    opacity: 1;
+    color: var(--pydata-accent);
+    background: rgba(138, 43, 226, 0.15);
+}
+
+/* Cell highlight for filter matches */
+.df-cell-highlight {
+    background: rgba(241, 196, 15, 0.2) !important;
+}
+
+/* ========== EDIT MODE STYLES ========== */
+
+/* Editable cells */
+.df-cell-editable {
+    cursor: pointer;
+    transition: all 0.15s ease;
+    position: relative;
+}
+
+.df-cell-editable:hover {
+    background: rgba(125, 95, 255, 0.15) !important;
+    outline: 2px solid var(--pydata-accent);
+    outline-offset: -2px;
+}
+
+.df-cell-editable::after {
+    content: '✏️';
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 10px;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.df-cell-editable:hover::after {
+    opacity: 0.6;
+}
+
+/* Cell being edited */
+.df-cell-editing {
+    padding: 0 !important;
+    background: var(--background-primary) !important;
+}
+
+.df-cell-input {
+    width: 100%;
+    height: 100%;
+    min-height: 28px;
+    border: 2px solid var(--pydata-accent);
+    border-radius: 4px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font-family: var(--pydata-font-mono);
+    font-size: 12px;
+    padding: 4px 8px;
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(125, 95, 255, 0.2);
+}
+
+.df-cell-input:focus {
+    border-color: var(--pydata-accent);
+    box-shadow: 0 0 0 4px rgba(125, 95, 255, 0.3);
+}
+
+/* Modified cells */
+.df-cell-modified {
+    background: rgba(46, 204, 113, 0.15) !important;
+    border-left: 3px solid var(--pydata-success) !important;
+}
+
+.df-cell-modified::before {
+    content: '●';
+    position: absolute;
+    left: 2px;
+    top: 2px;
+    font-size: 8px;
+    color: var(--pydata-success);
+}
+
+/* Selectable index cells */
+.df-cell-selectable {
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.df-cell-selectable:hover {
+    background: rgba(231, 76, 60, 0.2) !important;
+}
+
+/* Selected row */
+.df-row-selected {
+    background: rgba(125, 95, 255, 0.2) !important;
+}
+
+.df-row-selected td {
+    background: rgba(125, 95, 255, 0.15) !important;
+}
+
+/* Selected column */
+.df-col-selected {
+    background: rgba(52, 152, 219, 0.2) !important;
+}
+
+th.df-col-selected {
+    background: rgba(52, 152, 219, 0.3) !important;
+}
+
+/* Context menu styles */
+.df-context-menu {
+    min-width: 180px;
+    padding: 4px 0;
+    animation: fadeIn 0.15s ease;
+}
+
+.df-context-menu .df-dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    font-size: 13px;
+}
+
+.df-context-menu .df-dropdown-item.disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.df-menu-icon {
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+}
+
+.df-context-menu .df-dropdown-item:hover .df-menu-icon {
+    color: var(--text-normal);
+}
+
+.df-menu-separator {
+    height: 1px;
+    background: var(--background-modifier-border);
+    margin: 4px 8px;
+}
+
+/* Edit mode indicator */
+.df-edit-mode-indicator {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background: var(--pydata-accent);
+    color: white;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    box-shadow: 0 4px 12px rgba(125, 95, 255, 0.4);
+    z-index: 10000;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+}
+
+/* Column Filter Dropdown (Excel-style) */
+.df-column-filter-dropdown {
+    background: var(--background-primary);
+    border: 1px solid var(--pydata-border-glass);
+    border-radius: 10px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    width: 280px;
+    max-height: 400px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.df-filter-header {
+    padding: 12px 16px;
+    background: linear-gradient(135deg, var(--pydata-accent) 0%, #6a3de8 100%);
+    color: white;
+}
+
+.df-filter-title {
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.df-filter-actions {
+    padding: 8px 16px;
+    display: flex;
+    gap: 8px;
+    border-bottom: 1px solid var(--pydata-border-glass);
+}
+
+.df-filter-action-btn {
+    padding: 4px 12px;
+    font-size: 11px;
+    background: var(--background-modifier-border);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--text-muted);
+}
+
+.df-filter-action-btn:hover {
+    background: var(--pydata-accent);
+    color: white;
+}
+
+.df-filter-search {
+    margin: 8px 16px;
+    padding: 8px 12px;
+    border: 1px solid var(--pydata-border-glass);
+    border-radius: 6px;
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    font-size: 12px;
+}
+
+.df-filter-search:focus {
+    outline: none;
+    border-color: var(--pydata-accent);
+}
+
+.df-filter-values {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+    max-height: 200px;
+}
+
+.df-filter-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 16px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background 0.15s ease;
+}
+
+.df-filter-option:hover {
+    background: var(--background-modifier-hover);
+}
+
+.df-filter-more {
+    padding: 8px 16px;
+    font-size: 11px;
+    color: var(--text-muted);
+    font-style: italic;
+    text-align: center;
+}
+
+.df-filter-footer {
+    padding: 12px 16px;
+    display: flex;
+    gap: 8px;
+    border-top: 1px solid var(--pydata-border-glass);
+    background: var(--background-secondary);
+}
+
+.df-filter-apply {
+    flex: 1;
+    padding: 8px 16px;
+    background: var(--pydata-accent);
+    border: none;
+    border-radius: 6px;
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.df-filter-apply:hover {
+    background: var(--pydata-accent-hover);
+}
+
+.df-filter-clear {
+    padding: 8px 12px;
+    background: var(--background-modifier-border);
+    border: none;
+    border-radius: 6px;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.df-filter-clear:hover {
+    background: var(--pydata-error);
+    color: white;
+}
+
+/* Dropdown improvements */
+.df-dropdown-header {
+    padding: 10px 16px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--pydata-border-glass);
+    background: var(--background-secondary);
+}
+
+.df-dropdown-dtype {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-left: 4px;
+}
+
+.df-dropdown-icon {
+    margin-right: 8px;
+}
+
+/* Button icon inline */
+.df-btn-icon-inline {
+    display: inline-flex;
+    margin-right: 4px;
+}
+
+/* Save dialog */
+.df-save-dialog-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10001;
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
+}
+
+.df-save-dialog {
+    background: var(--background-primary);
+    border-radius: 16px;
+    box-shadow: 0 16px 64px rgba(0, 0, 0, 0.4);
+    width: 400px;
+    max-width: 90vw;
+    overflow: hidden;
+}
+
+.df-save-title {
+    margin: 0;
+    padding: 20px 24px;
+    background: linear-gradient(135deg, var(--pydata-accent) 0%, #6a3de8 100%);
+    color: white;
+    font-size: 16px;
+}
+
+.df-save-form {
+    padding: 20px 24px;
+}
+
+.df-save-label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: var(--text-normal);
+}
+
+.df-save-input {
+    width: 100%;
+    padding: 12px;
+    border: 1px solid var(--pydata-border-glass);
+    border-radius: 8px;
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    font-size: 14px;
+    font-family: var(--pydata-font-mono);
+}
+
+.df-save-input:focus {
+    outline: none;
+    border-color: var(--pydata-accent);
+    box-shadow: 0 0 0 3px rgba(138, 43, 226, 0.2);
+}
+
+.df-save-hint {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.df-save-options {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.df-save-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.df-save-buttons {
+    padding: 16px 24px;
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+    border-top: 1px solid var(--pydata-border-glass);
+    background: var(--background-secondary);
+}
+
+.df-save-btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.df-save-cancel {
+    background: var(--background-modifier-border);
+    color: var(--text-muted);
+}
+
+.df-save-cancel:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+.df-save-confirm {
+    background: var(--pydata-accent);
+    color: white;
+}
+
+.df-save-confirm:hover {
+    background: var(--pydata-accent-hover);
+}
+
+/* Compare dialog */
+.df-compare-dialog {
+    width: 500px;
+}
+
+.df-compare-result {
+    margin: 16px 24px;
+    padding: 12px;
+    background: var(--background-secondary);
+    border-radius: 8px;
+    min-height: 100px;
+    max-height: 200px;
+    overflow-y: auto;
+    font-family: var(--pydata-font-mono);
+    font-size: 12px;
+}
+
+.df-compare-loading {
+    color: var(--text-muted);
+    text-align: center;
+}
+
+.df-compare-error {
+    color: var(--pydata-error);
+}
+
+.df-compare-line {
+    padding: 4px 0;
+    border-bottom: 1px solid var(--pydata-border-glass);
+}
+
+.df-compare-line:last-child {
+    border-bottom: none;
+}
+
+/* Button tool improvements */
+.df-btn-tool {
+    background: var(--background-primary);
+    border: 1px solid var(--pydata-border-glass);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 11px;
+    cursor: pointer;
+    color: var(--text-normal);
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.df-btn-tool:hover {
+    background: var(--pydata-accent);
+    border-color: var(--pydata-accent);
+    color: white;
+}
+
+.df-btn-save {
+    background: linear-gradient(135deg, #27ae60 0%, #2ecc71 100%);
+    border-color: #27ae60;
+    color: white;
+}
+
+.df-btn-save:hover {
+    background: linear-gradient(135deg, #229954 0%, #27ae60 100%);
+}
+
+.df-btn-compare {
+    background: linear-gradient(135deg, #3498db 0%, #5dade2 100%);
+    border-color: #3498db;
+    color: white;
+}
+
+.df-btn-compare:hover {
+    background: linear-gradient(135deg, #2980b9 0%, #3498db 100%);
+}
+
+/* ====================================
+   Plotly Interactive Charts
+   ==================================== */
+
+.plotly-container {
+    position: relative;
+    width: 100%;
+    margin: 10px 0;
+    border: 1px solid var(--pydata-border-glass);
+    border-radius: 12px;
+    overflow: hidden;
+    background: white;
+    aspect-ratio: 16 / 10;
+    min-height: 400px;
+    max-height: 700px;
+}
+
+.plotly-iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    background: white;
+    display: block;
+}
+
+.plotly-controls {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 6px;
+    z-index: 100;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+
+.plotly-container:hover .plotly-controls {
+    opacity: 1;
+}
+
+.plotly-btn {
+    background: rgba(0, 0, 0, 0.7);
+    border: none;
+    border-radius: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+    color: white;
+    font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.2s ease;
+}
+
+.plotly-btn:hover {
+    background: var(--pydata-accent);
+}
+
+/* Plotly Fullscreen Overlay - TRUE fullscreen */
+.plotly-fullscreen-overlay {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    z-index: 99999 !important;
+    background: #1a1a2e !important;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    margin: 0;
+}
+
+.plotly-fullscreen-overlay .plotly-fs-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 20px;
+    background: linear-gradient(135deg, var(--pydata-accent) 0%, #6a3de8 100%);
+    color: white;
+}
+
+.plotly-fullscreen-overlay .plotly-fs-title {
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.plotly-fullscreen-overlay .plotly-fs-close {
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    border-radius: 8px;
+    padding: 8px 16px;
+    color: white;
+    cursor: pointer;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.2s ease;
+}
+
+.plotly-fullscreen-overlay .plotly-fs-close:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.plotly-fullscreen-overlay .plotly-fs-content {
+    flex: 1;
+    width: 100%;
+    height: calc(100vh - 52px);
+    background: white;
+}
+
+.plotly-fullscreen-overlay .plotly-fs-iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+}
+
+/* Old fullscreen class - keep for compatibility */
+.plotly-container.plotly-fullscreen {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    z-index: 9999 !important;
+    border-radius: 0 !important;
+    margin: 0 !important;
+    max-height: none !important;
+    aspect-ratio: unset !important;
+}
+
+.plotly-container.plotly-fullscreen .plotly-iframe {
+    height: 100vh !important;
+}
+
+.plotly-container.plotly-fullscreen .plotly-controls {
+    opacity: 1;
+}
+
+/* Plotly Embed in Markdown */
+.md-plotly-embed {
+    margin: 16px 0;
+    width: 100%;
+}
+
+.md-plotly-embed .plotly-container {
+    overflow: hidden;
+    aspect-ratio: 16 / 10;
+    min-height: 450px;
+    max-height: 600px;
+}
+
+.md-plotly-embed .plotly-iframe {
+    width: 100%;
+    height: 100%;
+}
+
+/* ====================================
+   Variable Explorer - DataFrame Button
+   ==================================== */
+
+.ds-btn-view-df {
+    background: var(--pydata-accent);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.2s ease;
+}
+
+.ds-btn-view-df:hover {
+    background: var(--pydata-accent-hover);
+    transform: scale(1.02);
+}
+
+/* Card Actions */
+.ds-card-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.ds-card-btn {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    padding: 4px 6px;
+    cursor: pointer;
+    color: var(--text-muted);
+    transition: all 0.2s ease;
+}
+
+.ds-card-btn.run:hover {
+    background: var(--pydata-success);
+    color: white;
+}
+
+.ds-card-btn.del:hover {
+    background: var(--pydata-error);
+    color: white;
+}
+
+/* === Additional Button Animations === */
+
+/* Click feedback animation */
+@keyframes clickPulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(0.95); }
+    100% { transform: scale(1); }
+}
+
+.ds-btn-header:active,
+.ds-btn-mini:active,
+.ds-card-btn:active,
+.py-run-btn:active,
+.py-studio-btn:active {
+    animation: clickPulse 0.15s ease-out;
+}
+
+/* Success flash animation */
+@keyframes successFlash {
+    0% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0.5); }
+    50% { box-shadow: 0 0 15px 5px rgba(46, 204, 113, 0.3); }
+    100% { box-shadow: 0 0 0 0 rgba(46, 204, 113, 0); }
+}
+
+.ds-btn-success-flash {
+    animation: successFlash 0.5s ease-out;
+}
+
+/* Subtle pulse for Run All button */
+@keyframes runAllPulse {
+    0%, 100% { box-shadow: 0 4px 12px rgba(125, 95, 255, 0.2); }
+    50% { box-shadow: 0 4px 20px rgba(125, 95, 255, 0.4); }
+}
+
+.ds-btn-header.run-all {
+    animation: runAllPulse 2s infinite ease-in-out;
+}
+
+.ds-btn-header.run-all:hover {
+    animation: none;
+}
+
+/* Fade in for tooltips */
+[title] {
+    position: relative;
+}
+
+/* Icon rotation for refresh buttons */
+@keyframes refreshSpin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.ds-refreshing svg {
+    animation: refreshSpin 0.8s linear infinite;
+}
+
+/* Shake animation for errors */
+@keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    10%, 30%, 50%, 70%, 90% { transform: translateX(-4px); }
+    20%, 40%, 60%, 80% { transform: translateX(4px); }
+}
+
+.ds-shake {
+    animation: shake 0.5s ease-in-out;
+}
+
+/* Bounce in animation for new cards */
+@keyframes bounceIn {
+    0% { opacity: 0; transform: scale(0.3); }
+    50% { transform: scale(1.05); }
+    70% { transform: scale(0.9); }
+    100% { opacity: 1; transform: scale(1); }
+}
+
+.ds-code-card.ds-new-card {
+    animation: bounceIn 0.4s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+}
+
+/* Glow effect for active elements */
+@keyframes glowPulse {
+    0%, 100% { box-shadow: 0 0 5px rgba(125, 95, 255, 0.3); }
+    50% { box-shadow: 0 0 15px rgba(125, 95, 255, 0.6); }
+}
+
+.ds-code-card:focus-within {
+    animation: glowPulse 1.5s infinite ease-in-out;
+    border-color: var(--pydata-accent);
+}
+
+/* Smooth hover transitions for all interactive elements */
+.ds-btn-header,
+.ds-btn-mini,
+.ds-card-btn,
+.ds-card-del,
+.ds-btn-view-df {
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Loading dots animation for status messages */
+@keyframes loadingDots {
+    0%, 20% { content: '.'; }
+    40% { content: '..'; }
+    60%, 100% { content: '...'; }
+}
+
+.ds-loading-msg::after {
+    content: '';
+    animation: loadingDots 1.5s infinite;
+}
+
+/* === RESPONSIVE DESIGN === */
+
+/* Button icon and text structure */
+.ds-btn-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+}
+
+.ds-btn-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
+.ds-btn-header,
+.ds-btn-mini {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.ds-btn-text {
+    white-space: nowrap;
+}
+
+/* Mobile / Narrow view - Hide text, show only icons */
+@media (max-width: 600px) {
+    .ds-btn-text {
+        display: none !important;
+    }
+    
+    .ds-btn-header,
+    .ds-btn-mini {
+        padding: 8px !important;
+        min-width: 32px;
+        justify-content: center;
+    }
+    
+    .ds-btn-header .ds-btn-icon,
+    .ds-btn-mini .ds-btn-icon {
+        margin: 0;
+    }
+    
+    .ds-studio-header {
+        padding: 10px;
+    }
+    
+    .ds-studio-header h4 {
+        font-size: 0.95em;
+    }
+    
+    .ds-actions {
+        gap: 4px;
+    }
+    
+    .ds-footer-actions {
+        gap: 4px;
+    }
+    
+    .ds-footer-title {
+        font-size: 11px;
+    }
+}
+
+/* Sidebar narrow detection - Using container queries when sidebar is resized */
+.workspace-leaf-content[data-type="data-science-studio-view"] {
+    container-type: inline-size;
+    container-name: studio;
+}
+
+@container studio (max-width: 350px) {
+    .ds-btn-text {
+        display: none !important;
+    }
+    
+    .ds-btn-header,
+    .ds-btn-mini {
+        padding: 8px !important;
+        min-width: 32px;
+        justify-content: center;
+    }
+    
+    .ds-studio-header h4 {
+        font-size: 0.9em;
+    }
+    
+    .ds-actions {
+        gap: 4px;
+    }
+    
+    .ds-footer-actions {
+        gap: 3px;
+    }
+}
+
+@container studio (max-width: 280px) {
+    .ds-studio-header {
+        flex-direction: column;
+        gap: 8px;
+        align-items: flex-start;
+    }
+    
+    .ds-actions {
+        width: 100%;
+        justify-content: flex-start;
+        flex-wrap: wrap;
+    }
+}
+
+/* ============================================
+   Python Syntax Highlighting
+   ============================================ */
+
+.df-console-code {
+    font-family: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    background: transparent;
+}
+
+/* Python syntax colors - VS Code Dark+ inspired */
+.py-keyword {
+    color: #c586c0;
+    font-weight: 500;
+}
+
+.py-string {
+    color: #ce9178;
+}
+
+.py-number {
+    color: #b5cea8;
+}
+
+.py-comment {
+    color: #6a9955;
+    font-style: italic;
+}
+
+.py-builtin {
+    color: #dcdcaa;
+}
+
+.py-library {
+    color: #4ec9b0;
+    font-weight: 500;
+}
+
+.py-method {
+    color: #dcdcaa;
+}
+
+.py-property {
+    color: #9cdcfe;
+}
+
+.py-column {
+    color: #9cdcfe;
+    font-weight: 500;
+}
+
+.py-operator {
+    color: #d4d4d4;
+}
+
+/* Light theme adjustments */
+.theme-light .py-keyword {
+    color: #af00db;
+}
+
+.theme-light .py-string {
+    color: #a31515;
+}
+
+.theme-light .py-number {
+    color: #098658;
+}
+
+.theme-light .py-comment {
+    color: #008000;
+}
+
+.theme-light .py-builtin {
+    color: #795e26;
+}
+
+.theme-light .py-library {
+    color: #267f99;
+}
+
+.theme-light .py-method {
+    color: #795e26;
+}
+
+.theme-light .py-property {
+    color: #001080;
+}
+
+.theme-light .py-column {
+    color: #001080;
+}
+
+.theme-light .py-operator {
+    color: #000000;
+}
+
+/* ============================================
+   Autocomplete Dropdown
+   ============================================ */
+
+.df-autocomplete-dropdown {
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+    max-height: 250px;
+    overflow-y: auto;
+    min-width: 200px;
+    max-width: 400px;
+    padding: 4px;
+    font-family: 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
+    font-size: 12px;
+}
+
+.df-autocomplete-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: all 0.15s ease;
+    color: var(--text-normal);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.df-autocomplete-item:hover,
+.df-autocomplete-item.selected {
+    background: linear-gradient(135deg, rgba(125, 95, 255, 0.15) 0%, rgba(102, 126, 234, 0.15) 100%);
+    color: var(--text-accent);
+}
+
+.df-autocomplete-item.selected {
+    background: linear-gradient(135deg, rgba(125, 95, 255, 0.25) 0%, rgba(102, 126, 234, 0.25) 100%);
+    font-weight: 500;
+}
+
+/* Autocomplete icon */
+.df-autocomplete-icon {
+    flex-shrink: 0;
+    font-size: 14px;
+}
+
+/* Autocomplete text */
+.df-autocomplete-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.df-autocomplete-text strong {
+    color: var(--text-accent);
+    font-weight: 600;
+}
+
+/* Category-specific styling */
+.df-autocomplete-column .df-autocomplete-text {
+    color: #9cdcfe;
+}
+
+.df-autocomplete-discovered .df-autocomplete-text {
+    color: #4ec9b0;
+}
+
+.df-autocomplete-method .df-autocomplete-text {
+    color: #dcdcaa;
+}
+
+.df-autocomplete-stats .df-autocomplete-text {
+    color: #b5cea8;
+}
+
+.df-autocomplete-transform .df-autocomplete-text {
+    color: #c586c0;
+}
+
+.df-autocomplete-viz .df-autocomplete-text {
+    color: #ce9178;
+}
+
+.df-autocomplete-param .df-autocomplete-text {
+    color: #9cdcfe;
+}
+
+/* Badge for new/discovered items */
+.df-autocomplete-badge {
+    font-size: 9px;
+    padding: 2px 5px;
+    border-radius: 4px;
+    background: linear-gradient(135deg, #00b894 0%, #00cec9 100%);
+    color: white;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    margin-left: auto;
+}
+
+/* Keyboard hint at bottom */
+.df-autocomplete-hint {
+    padding: 6px 12px;
+    font-size: 10px;
+    color: var(--text-faint);
+    border-top: 1px solid var(--background-modifier-border);
+    text-align: center;
+    background: var(--background-secondary);
+    border-radius: 0 0 8px 8px;
+}
+
+/* Light theme adjustments for autocomplete */
+.theme-light .df-autocomplete-column .df-autocomplete-text {
+    color: #001080;
+}
+
+.theme-light .df-autocomplete-discovered .df-autocomplete-text {
+    color: #267f99;
+}
+
+.theme-light .df-autocomplete-method .df-autocomplete-text {
+    color: #795e26;
+}
+
+.theme-light .df-autocomplete-stats .df-autocomplete-text {
+    color: #098658;
+}
+
+/* Console input styling enhancement */
+.df-console-input {
+    font-family: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace !important;
+    font-size: 13px;
+    letter-spacing: -0.3px;
+}
+
+.df-console-input::placeholder {
+    color: var(--text-faint);
+    font-style: italic;
+}
+
+/* Console prompt styling */
+.df-console-prompt,
+.df-console-input-prompt {
+    color: #4ec9b0;
+    font-weight: 600;
+    font-family: 'Fira Code', 'JetBrains Mono', 'Consolas', monospace;
 }

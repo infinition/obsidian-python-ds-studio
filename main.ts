@@ -1,6 +1,6 @@
 import { Plugin, ItemView, WorkspaceLeaf, Notice, setIcon, MarkdownView, Editor, PluginSettingTab, Setting, App, TFile, Modal, TFolder, normalizePath, AbstractInputSuggest, requestUrl } from 'obsidian';
 import { ViewPlugin, Decoration, WidgetType, DecorationSet, ViewUpdate, EditorView } from '@codemirror/view';
-import { RangeSetBuilder, EditorState } from '@codemirror/state';
+import { RangeSetBuilder, EditorState, Compartment } from '@codemirror/state';
 import { python } from '@codemirror/lang-python';
 import { keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
@@ -10,6 +10,8 @@ import { searchKeymap } from '@codemirror/search';
 import { lintKeymap } from '@codemirror/lint';
 import { tags } from '@lezer/highlight';
 import { t, Language, TRANSLATIONS } from './i18n';
+import { DataFrameViewerModal, DataFrameData, getDataFrameExtractionCode } from './dataframe-viewer';
+import { createObsidianBridge, getObsidianModulePythonCode } from './obsidian-api';
 
 // --- CONFIGURATION ---
 const PYODIDE_VERSION = 'v0.23.4';
@@ -23,6 +25,7 @@ export interface PyDataSettings {
     githubToken?: string;
     imageSaveMode: 'base64' | 'folder' | 'root' | 'ask';
     imageFolderPath: string;
+    codeWrap: boolean;
 }
 
 const DEFAULT_SETTINGS: PyDataSettings = {
@@ -31,7 +34,8 @@ const DEFAULT_SETTINGS: PyDataSettings = {
     language: 'en',
     githubToken: undefined,
     imageSaveMode: 'base64',
-    imageFolderPath: ''
+    imageFolderPath: '',
+    codeWrap: true
 };
 
 declare global {
@@ -78,13 +82,13 @@ class PyodideWorkerManager {
                 const workerCode = await this.getWorkerCode();
                 const blob = new Blob([workerCode], { type: 'application/javascript' });
                 const workerUrl = URL.createObjectURL(blob);
-                
+
                 this.worker = new Worker(workerUrl);
-                
+
                 // Wait for worker to be ready
                 await new Promise<void>((resolve, reject) => {
                     const timeout = setTimeout(() => reject(new Error('Worker init timeout')), 30000);
-                    
+
                     const onMessage = (e: MessageEvent) => {
                         if (e.data.type === 'ready') {
                             clearTimeout(timeout);
@@ -133,7 +137,7 @@ class PyodideWorkerManager {
         // Inline worker code to avoid file loading issues in Obsidian
         const PYODIDE_VERSION = 'v0.23.4';
         const PYODIDE_BASE = `https://cdn.jsdelivr.net/pyodide/${PYODIDE_VERSION}/full/`;
-        
+
         return `
 const PYODIDE_VERSION = '${PYODIDE_VERSION}';
 const PYODIDE_BASE = '${PYODIDE_BASE}';
@@ -153,6 +157,8 @@ async function initPyodide(packages, autoloadPackages) {
         await pyodide.runPythonAsync(\`
             import micropip
             try: await micropip.install("seaborn")
+            except: pass
+            try: await micropip.install("plotly")
             except: pass
             import pyodide_http
             pyodide_http.patch_all()
@@ -203,6 +209,36 @@ try:
 except ImportError:
     __pd_has_matplotlib = False
 
+# Plotly support
+__pd_plotly_figures = []
+try:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    import plotly.io as pio
+    __pd_has_plotly = True
+    
+    # Store original show functions
+    __pd_original_go_show = go.Figure.show
+    __pd_original_pio_show = pio.show
+    
+    # Override Figure.show to capture HTML
+    def __pd_plotly_show(self, *args, **kwargs):
+        html = self.to_html(include_plotlyjs='cdn', full_html=True)
+        print(f'__PLOTLY_HTML_START__{html}__PLOTLY_HTML_END__')
+    
+    go.Figure.show = __pd_plotly_show
+    
+    # Override pio.show
+    def __pd_pio_show(fig, *args, **kwargs):
+        if hasattr(fig, 'to_html'):
+            html = fig.to_html(include_plotlyjs='cdn', full_html=True)
+            print(f'__PLOTLY_HTML_START__{html}__PLOTLY_HTML_END__')
+    
+    pio.show = __pd_pio_show
+    
+except ImportError:
+    __pd_has_plotly = False
+
 if __pd_has_matplotlib:
     plt.clf()
 
@@ -228,8 +264,22 @@ if __pd_has_matplotlib:
         
         await pyodide.runPythonAsync(finalCode);
         
+        // Extract Plotly HTML if present
+        const plotlyMatch = stdout.match(/__PLOTLY_HTML_START__([\\s\\S]*?)__PLOTLY_HTML_END__/);
+        let plotlyHtml = null;
+        if (plotlyMatch) {
+            plotlyHtml = plotlyMatch[1];
+            stdout = stdout.replace(/__PLOTLY_HTML_START__[\\s\\S]*?__PLOTLY_HTML_END__\\n?/g, '');
+        }
+        
         const plotMatch = stdout.match(/__PLOT_DATA__:([A-Za-z0-9+/=]+)/);
-        const cleanStdout = stdout.replace(/__PLOT_DATA__:[A-Za-z0-9+\\/=]+\\n?/, '').trim();
+        let cleanStdout = stdout.replace(/__PLOT_DATA__:[A-Za-z0-9+\\/=]+\\n?/, '').trim();
+        
+        // If we have Plotly HTML, include it in the text output for rendering
+        if (plotlyHtml) {
+            cleanStdout = plotlyHtml;
+        }
+        
         const err = stderr ? stderr : undefined;
         
         return { 
@@ -292,10 +342,10 @@ self.postMessage({ type: 'ready' });
                 reject(new Error('Worker not initialized'));
                 return;
             }
-            
+
             const id = this.generateId();
             this.pendingRequests.set(id, { resolve, reject });
-            
+
             // Timeout after 5 minutes for long-running Python code
             const timeout = setTimeout(() => {
                 if (this.pendingRequests.has(id)) {
@@ -303,7 +353,7 @@ self.postMessage({ type: 'ready' });
                     reject(new Error('Request timeout'));
                 }
             }, 300000);
-            
+
             // Clear timeout on resolve
             const originalResolve = resolve;
             this.pendingRequests.set(id, {
@@ -313,7 +363,7 @@ self.postMessage({ type: 'ready' });
                 },
                 reject
             });
-            
+
             this.worker.postMessage({ id, type, payload });
         });
     }
@@ -370,7 +420,7 @@ const obsidianHighlightStyle = HighlightStyle.define([
 // --- 1. La Vue Latérale (Studio Notebook) ---
 class DataStudioView extends ItemView {
     plugin: PyDataPlugin;
-    codeBlocks: { id: string, code: string, editor?: EditorView }[] = [];
+    codeBlocks: { id: string, code: string, editor?: EditorView, wrapCompartment?: Compartment }[] = [];
     isSplit: boolean = false;
     outputContainer: HTMLElement | null = null;
     varContainer: HTMLElement | null = null;
@@ -397,13 +447,17 @@ class DataStudioView extends ItemView {
 
         const actionsDiv = header.createEl("div", { cls: "ds-actions" });
 
-        const btnRunAll = actionsDiv.createEl("button", { text: t(this.plugin.settings.language, "run_all"), cls: "ds-btn-header run-all" });
+        const btnRunAll = actionsDiv.createEl("button", { cls: "ds-btn-header run-all" });
+        const runAllIconSpan = btnRunAll.createSpan({ cls: "ds-btn-icon" });
+        setIcon(runAllIconSpan, "play");
+        btnRunAll.createSpan({ text: t(this.plugin.settings.language, "run_all").replace("▶ ", ""), cls: "ds-btn-text" });
+        btnRunAll.setAttribute("title", t(this.plugin.settings.language, "tooltip_run_all"));
         btnRunAll.onclick = () => this.runAllBlocks();
 
         const btnFlush = actionsDiv.createEl("button", { cls: "ds-btn-header" });
-        const flushIconSpan = btnFlush.createSpan({ cls: "py-btn-icon" });
+        const flushIconSpan = btnFlush.createSpan({ cls: "ds-btn-icon" });
         setIcon(flushIconSpan, "refresh-cw");
-        btnFlush.createSpan({ text: t(this.plugin.settings.language, "flush") });
+        btnFlush.createSpan({ text: t(this.plugin.settings.language, "flush"), cls: "ds-btn-text" });
         btnFlush.setAttribute("title", t(this.plugin.settings.language, "flush_tooltip_detailed"));
         btnFlush.onclick = async () => {
             btnFlush.addClass('ds-is-loading');
@@ -417,7 +471,11 @@ class DataStudioView extends ItemView {
             new Notice(t(this.plugin.settings.language, "python_reset_done"));
         };
 
-        const btnClear = actionsDiv.createEl("button", { text: t(this.plugin.settings.language, "clear_all"), cls: "ds-btn-header" });
+        const btnClear = actionsDiv.createEl("button", { cls: "ds-btn-header" });
+        const clearIconSpan = btnClear.createSpan({ cls: "ds-btn-icon" });
+        setIcon(clearIconSpan, "trash-2");
+        btnClear.createSpan({ text: t(this.plugin.settings.language, "clear_all").replace("🗑️ ", ""), cls: "ds-btn-text" });
+        btnClear.setAttribute("title", t(this.plugin.settings.language, "tooltip_clear_all"));
         btnClear.onclick = () => {
             this.codeBlocks = [];
             this.renderList();
@@ -466,23 +524,41 @@ class DataStudioView extends ItemView {
 
         const footerActions = footerHeader.createEl("div", { cls: "ds-footer-actions" });
 
-        const btnVars = footerActions.createEl("button", { text: t(this.plugin.settings.language, "variables"), cls: "ds-btn-mini" });
+        const btnVars = footerActions.createEl("button", { cls: "ds-btn-mini" });
+        const varsIcon = btnVars.createSpan({ cls: "ds-btn-icon" });
+        setIcon(varsIcon, "variable");
+        btnVars.createSpan({ text: t(this.plugin.settings.language, "variables"), cls: "ds-btn-text" });
+        btnVars.setAttribute("title", t(this.plugin.settings.language, "tooltip_variables"));
         btnVars.onclick = () => this.showVariableExplorer();
 
-        const btnPip = footerActions.createEl("button", { text: t(this.plugin.settings.language, "packages"), cls: "ds-btn-mini" });
+        const btnPip = footerActions.createEl("button", { cls: "ds-btn-mini" });
+        const pipIcon = btnPip.createSpan({ cls: "ds-btn-icon" });
+        setIcon(pipIcon, "package");
+        btnPip.createSpan({ text: t(this.plugin.settings.language, "packages"), cls: "ds-btn-text" });
+        btnPip.setAttribute("title", t(this.plugin.settings.language, "tooltip_packages"));
         btnPip.onclick = () => this.showPackageManager();
 
-        const btnConsole = footerActions.createEl("button", { text: t(this.plugin.settings.language, "console"), cls: "ds-btn-mini" });
+        const btnConsole = footerActions.createEl("button", { cls: "ds-btn-mini" });
+        const consoleIcon = btnConsole.createSpan({ cls: "ds-btn-icon" });
+        setIcon(consoleIcon, "terminal");
+        btnConsole.createSpan({ text: t(this.plugin.settings.language, "console"), cls: "ds-btn-text" });
+        btnConsole.setAttribute("title", t(this.plugin.settings.language, "tooltip_console"));
         btnConsole.onclick = () => this.renderConsole();
 
-        const btnWipe = footerActions.createEl("button", { text: t(this.plugin.settings.language, "clear_log"), cls: "ds-btn-mini" });
+        const btnWipe = footerActions.createEl("button", { cls: "ds-btn-mini" });
+        const wipeIcon = btnWipe.createSpan({ cls: "ds-btn-icon" });
+        setIcon(wipeIcon, "eraser");
+        btnWipe.createSpan({ text: t(this.plugin.settings.language, "clear_log"), cls: "ds-btn-text" });
+        btnWipe.setAttribute("title", t(this.plugin.settings.language, "tooltip_clear_log"));
         btnWipe.onclick = () => {
             this.clearConsole();
             new Notice(t(this.plugin.settings.language, "log_cleared"));
         };
 
         const btnSplit = footerActions.createEl("button", { cls: "ds-btn-mini ds-btn-split" });
-        setIcon(btnSplit, "columns");
+        const splitIcon = btnSplit.createSpan({ cls: "ds-btn-icon" });
+        setIcon(splitIcon, "columns");
+        btnSplit.createSpan({ text: t(this.plugin.settings.language, "split_view"), cls: "ds-btn-text" });
         btnSplit.setAttribute("title", t(this.plugin.settings.language, "split_view"));
         btnSplit.onclick = () => {
             this.isSplit = !this.isSplit;
@@ -522,8 +598,9 @@ class DataStudioView extends ItemView {
     async appendOutput(result: { text: string, image: string | null, error?: string }, blockIndex: number, fromRunAll = false) {
         if (!this.outputContainer) return;
 
+        // Clear placeholder
         if (this.outputContainer.querySelector('.ds-placeholder') || this.outputContainer.querySelector('h5')) {
-            this.outputContainer.empty();
+            this.outputContainer.innerHTML = '';
         }
 
         const entry = this.outputContainer.createEl("div", { cls: "ds-log-entry" });
@@ -535,16 +612,19 @@ class DataStudioView extends ItemView {
             const dragData = JSON.stringify(result);
             e.dataTransfer?.setData('application/x-obsidian-pydata-result', dragData);
 
-            // Fallback pour les autres applications
+            // Build fallback plain-text markdown for other apps
             let fallbackMarkdown = `\n> [!abstract] ${t(this.plugin.settings.language, "result_python")}\n`;
             if (result.error) {
                 fallbackMarkdown = `\n> [!error] ${t(this.plugin.settings.language, "error_python")}\n`;
+                // ICI C'ÉTAIT DÉJÀ PRESQUE BON, MAIS ASSURE-TOI QUE ÇA RESSEMBLE À ÇA :
+                fallbackMarkdown += '> ```text\n';
                 result.error.split('\n').forEach(line => fallbackMarkdown += `> ${line}\n`);
+                fallbackMarkdown += '> ```\n';
             } else {
                 if (result.text) {
-                    fallbackMarkdown += `> \`\`\`text\n`;
+                    fallbackMarkdown += '> ```text\n';
                     result.text.split('\n').forEach(line => fallbackMarkdown += `> ${line}\n`);
-                    fallbackMarkdown += `> \`\`\`\n`;
+                    fallbackMarkdown += '> ```\n';
                 }
                 if (result.image) {
                     fallbackMarkdown += `> ![Graph](data:image/png;base64,${result.image})\n`;
@@ -563,11 +643,38 @@ class DataStudioView extends ItemView {
         }
 
         if (result.error) {
-            entry.createEl("div", { cls: "ds-log-error", text: result.error });
+            // Display full traceback inside a pre block to preserve < and > and newlines
+            const errorBlock = document.createElement('pre');
+            errorBlock.className = 'ds-log-error';
+            errorBlock.style.background = 'var(--background-modifier-error, #3a2323)';
+            errorBlock.style.color = 'var(--text-error, #ffb3b3)';
+            errorBlock.style.padding = '1em';
+            errorBlock.style.borderRadius = '8px';
+            errorBlock.style.whiteSpace = 'pre-wrap';
+            errorBlock.style.wordBreak = 'break-word';
+            errorBlock.style.overflowWrap = 'anywhere';
+            // Use textContent to safely display < and > without HTML interpretation
+            errorBlock.textContent = (result.error || '').trim();
+            entry.appendChild(errorBlock);
             title.style.color = "var(--text-error)";
+
+            // If result.text is present but looks like a callout (starts with '>'), skip it
+            if (result.text && result.text.trim() && !result.text.trim().startsWith('>')) {
+                // show additional text only if it's not callout-like
+                if (this.plugin.isPlotlyHtml(result.text)) {
+                    this.plugin.renderPlotlyHtml(result.text, entry);
+                } else {
+                    entry.createEl("pre", { cls: "ds-log-text", text: result.text });
+                }
+            }
         } else {
             if (result.text) {
-                entry.createEl("pre", { cls: "ds-log-text", text: result.text });
+                // Check for Plotly HTML output
+                if (this.plugin.isPlotlyHtml(result.text)) {
+                    this.plugin.renderPlotlyHtml(result.text, entry);
+                } else {
+                    entry.createEl("pre", { cls: "ds-log-text", text: result.text });
+                }
             }
             if (result.image) {
                 const img = entry.createEl("img", { cls: "ds-log-img" });
@@ -599,6 +706,7 @@ class DataStudioView extends ItemView {
 
             const runBtn = cardActions.createEl("button", { cls: "ds-card-btn run" });
             setIcon(runBtn, "play");
+            runBtn.setAttribute("title", t(this.plugin.settings.language, "tooltip_run_block"));
             runBtn.onclick = (e) => {
                 e.stopPropagation();
                 this.runSingleBlock(index, false, true, runBtn);
@@ -606,6 +714,7 @@ class DataStudioView extends ItemView {
 
             const deleteBtn = cardActions.createEl("button", { cls: "ds-card-btn del" });
             setIcon(deleteBtn, "trash");
+            deleteBtn.setAttribute("title", t(this.plugin.settings.language, "tooltip_delete_block"));
             deleteBtn.onclick = (e) => {
                 e.stopPropagation();
                 this.codeBlocks.splice(index, 1);
@@ -614,6 +723,10 @@ class DataStudioView extends ItemView {
 
             // ZONE D'EDITION (CodeMirror 6)
             const editorWrapper = card.createEl("div", { cls: "ds-card-editor-wrapper" });
+
+            // Compartment for dynamic line wrapping
+            const wrapCompartment = new Compartment();
+            block.wrapCompartment = wrapCompartment;
 
             const startState = EditorState.create({
                 doc: block.code,
@@ -628,6 +741,7 @@ class DataStudioView extends ItemView {
                     indentOnInput(),
                     syntaxHighlighting(obsidianHighlightStyle, { fallback: true }),
                     python(),
+                    wrapCompartment.of(this.plugin.settings.codeWrap ? EditorView.lineWrapping : []),
                     keymap.of([
                         ...closeBracketsKeymap,
                         ...defaultKeymap,
@@ -647,7 +761,7 @@ class DataStudioView extends ItemView {
                             backgroundColor: "var(--code-background)",
                             color: "var(--code-normal)"
                         },
-                        ".cm-scroller": { overflow: "visible" },
+                        ".cm-scroller": { overflow: "auto" },
                         ".cm-content": { fontFamily: "var(--pydata-font-mono)", fontSize: "13px" },
                         ".cm-gutters": {
                             backgroundColor: "var(--code-background)",
@@ -712,7 +826,7 @@ class DataStudioView extends ItemView {
             setIcon(btnRunAll, "loader");
         }
 
-        this.clearConsole();
+        // Ne pas effacer la console - garder les résultats précédents
         for (let i = 0; i < this.codeBlocks.length; i++) {
             await this.runSingleBlock(i, false, false, undefined, true);
         }
@@ -785,67 +899,52 @@ class DataStudioView extends ItemView {
         }
     }
 
+    private lastVarsJson: string = '';
+    private varTableBody: HTMLElement | null = null;
+
     async refreshVariables(force = false) {
         if (!this.varContainer) return;
 
-        this.varContainer.empty();
-        const header = this.varContainer.createEl("div", { cls: "ds-var-header" });
-        header.createEl("h5", { text: t(this.plugin.settings.language, "var_explorer"), cls: "ds-var-title" });
+        // First time: create the structure
+        if (!this.varContainer.querySelector('.ds-var-header')) {
+            this.varContainer.empty();
+            const header = this.varContainer.createEl("div", { cls: "ds-var-header" });
+            header.createEl("h5", { text: t(this.plugin.settings.language, "var_explorer"), cls: "ds-var-title" });
 
-        const actions = header.createEl("div", { cls: "ds-var-actions" });
+            const actions = header.createEl("div", { cls: "ds-var-actions" });
 
-        const btnAdd = actions.createEl("button", { text: "+", cls: "ds-btn-mini ds-btn-add-var" });
-        btnAdd.setAttribute("title", t(this.plugin.settings.language, "add_var"));
-        btnAdd.onclick = () => {
-            // Création d'une ligne d'ajout temporaire
-            const table = this.varContainer?.querySelector("table");
-            if (!table) return;
-            const body = table.querySelector("tbody");
-            if (!body) return;
+            const btnAdd = actions.createEl("button", { text: "+", cls: "ds-btn-mini ds-btn-add-var" });
+            btnAdd.setAttribute("title", t(this.plugin.settings.language, "tooltip_add_var"));
+            btnAdd.onclick = () => this.showAddVariableRow();
 
-            const row = body.createEl("tr", { cls: "ds-var-row-new" });
-            const tdName = row.createEl("td");
-            const inputName = tdName.createEl("input", { type: "text", placeholder: t(this.plugin.settings.language, "placeholder_nom"), cls: "ds-var-input-inline" });
-
-            const tdType = row.createEl("td");
-            const selectType = tdType.createEl("select", { cls: "ds-var-select-inline" });
-            ['str', 'int', 'float', 'list', 'dict', 'bool'].forEach(t => {
-                const opt = selectType.createEl("option", { text: t, value: t });
-            });
-
-            const tdValue = row.createEl("td");
-            const inputValue = tdValue.createEl("input", { type: "text", placeholder: t(this.plugin.settings.language, "placeholder_val"), cls: "ds-var-input-inline" });
-
-            const tdActions = row.createEl("td");
-            const btnConfirm = tdActions.createEl("button", { text: "✓", cls: "ds-btn-mini ds-btn-confirm" });
-            btnConfirm.onclick = async () => {
-                const name = inputName.value.trim();
-                const type = selectType.value;
-                let val = inputValue.value;
-                if (!name) return;
-
-                let pyCode = "";
-                if (type === 'str') pyCode = `${name} = "${val.replace(/"/g, '\\"')}"`;
-                else if (type === 'bool') pyCode = `${name} = ${val.toLowerCase() === 'true'}`;
-                else pyCode = `${name} = ${type}(${val})`;
-
-                await this.plugin.executePython(pyCode, false);
+            const btnRefresh = actions.createEl("button", { text: t(this.plugin.settings.language, "refresh"), cls: "ds-btn-mini" });
+            btnRefresh.setAttribute("title", t(this.plugin.settings.language, "tooltip_refresh_vars"));
+            btnRefresh.onclick = () => {
                 this.refreshVariables(true);
-                new Notice(t(this.plugin.settings.language, "var_added"));
+                new Notice(t(this.plugin.settings.language, "refresh_done"));
             };
-            const btnCancel = tdActions.createEl("button", { text: "×", cls: "ds-btn-mini ds-btn-cancel" });
-            btnCancel.onclick = () => row.remove();
 
-            inputName.focus();
-        };
+            const table = this.varContainer.createEl("table", { cls: "ds-var-table" });
+            const head = table.createEl("thead");
+            const hrow = head.createEl("tr");
+            hrow.createEl("th", { text: "", cls: "ds-var-th-view" }); // View column
+            hrow.createEl("th", { text: t(this.plugin.settings.language, "var_name") });
+            hrow.createEl("th", { text: t(this.plugin.settings.language, "var_type") });
+            hrow.createEl("th", { text: t(this.plugin.settings.language, "var_value") });
+            hrow.createEl("th", { text: "" }); // Actions column
 
-        const btnRefresh = actions.createEl("button", { text: t(this.plugin.settings.language, "refresh"), cls: "ds-btn-mini" });
-        btnRefresh.onclick = () => {
-            this.refreshVariables(true);
-            new Notice(t(this.plugin.settings.language, "refresh_done"));
-        };
+            this.varTableBody = table.createEl("tbody");
+        }
 
-        const loading = this.varContainer.createEl("div", { text: t(this.plugin.settings.language, "loading_vars"), cls: "ds-placeholder-mini" });
+        // Show loading indicator without clearing
+        const loadingIndicator = this.varContainer.querySelector('.ds-var-loading');
+        let loading: HTMLElement;
+        if (!loadingIndicator) {
+            loading = this.varContainer.createEl("div", { text: t(this.plugin.settings.language, "loading_vars"), cls: "ds-var-loading ds-placeholder-mini" });
+        } else {
+            loading = loadingIndicator as HTMLElement;
+            loading.style.display = 'block';
+        }
 
         const res = await this.plugin.executePython(`
 import json
@@ -867,102 +966,264 @@ vars_dict = {
         "full_value": str(v) if len(str(v)) <= 1000 else str(v)[:1000]
     } 
     for k, v in globals().items() 
-    if not k.startswith('_') and k not in ['sys', 'io', 'base64', 'matplotlib', 'plt', 'pd', 'sns', 'custom_show', 'vars_dict', 'micropip', 'pyodide_http', 'get_val_str', 'json', 'HAS_MATPLOTLIB', 'core_modules', 'lst', 'mod', 'pkgs', 'list_res', 'vars', 'sorted_names', 'info', 'row', 'td_name', 'input', 'new_name', 'new_val', 'py_code', 'btn_del', 'td_actions', 'btn_add', 'btn_refresh', 'loading', 'res', 'table', 'head', 'hrow', 'body', 'empty_row', 'sortedNames', 'name', 'info', 'row', 'tdName', 'input', 'newName', 'tdValue', 'newVal', 'pyCode', 'tdActions', 'btnDel']
+    if not k.startswith('_') and k not in ['sys', 'io', 'base64', 'matplotlib', 'plt', 'pd', 'sns', 'custom_show', 'vars_dict', 'micropip', 'pyodide_http', 'get_val_str', 'json', 'HAS_MATPLOTLIB', 'core_modules', 'lst', 'mod', 'pkgs', 'list_res', 'vars', 'sorted_names', 'info', 'row', 'td_name', 'input', 'new_name', 'new_val', 'py_code', 'btn_del', 'td_actions', 'btn_add', 'btn_refresh', 'loading', 'res', 'table', 'head', 'hrow', 'body', 'empty_row', 'sortedNames', 'name', 'info', 'row', 'tdName', 'input', 'newName', 'tdValue', 'newVal', 'pyCode', 'tdActions', 'btnDel', 'go', 'px', 'pio']
 }
 print(json.dumps(vars_dict))
         `, false);
 
-        loading.remove();
+        loading.style.display = 'none';
 
         if (res.error) {
-            this.varContainer.createEl("div", { text: `${t(this.plugin.settings.language, "error_msg")}${res.error}`, cls: "ds-log-error" });
+            // Show error without clearing everything
+            const existingError = this.varContainer.querySelector('.ds-var-error');
+            if (existingError) existingError.remove();
+            this.varContainer.createEl("div", { text: `${t(this.plugin.settings.language, "error_msg")}${res.error}`, cls: "ds-log-error ds-var-error" });
             return;
         }
 
-        if (res.text) {
+        if (res.text && this.varTableBody) {
             try {
                 const vars = JSON.parse(res.text);
-                const table = this.varContainer.createEl("table", { cls: "ds-var-table" });
-                const head = table.createEl("thead");
-                const hrow = head.createEl("tr");
-                hrow.createEl("th", { text: t(this.plugin.settings.language, "var_name") });
-                hrow.createEl("th", { text: t(this.plugin.settings.language, "var_type") });
-                hrow.createEl("th", { text: t(this.plugin.settings.language, "var_value") });
-                hrow.createEl("th", { text: "" });
+                const varsJson = JSON.stringify(vars);
 
-                const body = table.createEl("tbody");
+                // Skip update if nothing changed
+                if (varsJson === this.lastVarsJson && !force) {
+                    return;
+                }
+                this.lastVarsJson = varsJson;
+
                 const sortedNames = Object.keys(vars).sort();
+                const existingRows = new Map<string, HTMLElement>();
 
+                // Collect existing rows
+                this.varTableBody.querySelectorAll('tr[data-var-name]').forEach((row) => {
+                    const name = row.getAttribute('data-var-name');
+                    if (name) existingRows.set(name, row as HTMLElement);
+                });
+
+                // Remove the "no vars" row if it exists
+                const emptyRow = this.varTableBody.querySelector('.ds-var-empty-row');
+                if (emptyRow && sortedNames.length > 0) {
+                    emptyRow.remove();
+                }
+
+                // Handle empty state
                 if (sortedNames.length === 0) {
-                    const emptyRow = body.createEl("tr");
+                    this.varTableBody.empty();
+                    const emptyRow = this.varTableBody.createEl("tr", { cls: "ds-var-empty-row" });
                     emptyRow.createEl("td", { text: t(this.plugin.settings.language, "no_vars"), cls: "ds-placeholder-mini", attr: { colspan: "4" } });
+                    return;
                 }
 
-                for (const name of sortedNames) {
+                // Track which vars we've seen
+                const seenVars = new Set<string>();
+
+                // Update or add rows
+                for (let i = 0; i < sortedNames.length; i++) {
+                    const name = sortedNames[i];
                     const info = vars[name];
-                    const row = body.createEl("tr");
+                    seenVars.add(name);
 
-                    // NOM (Editable)
-                    const tdName = row.createEl("td", { text: name, cls: "ds-var-name ds-editable" });
-                    tdName.ondblclick = () => {
-                        const input = tdName.createEl("input", { type: "text", value: name, cls: "ds-var-input-inline" });
-                        tdName.firstChild?.remove();
-                        input.focus();
-                        input.onkeydown = async (e) => {
-                            if (e.key === 'Enter') {
-                                const newName = input.value.trim();
-                                if (newName && newName !== name) {
-                                    await this.plugin.executePython(`${newName} = ${name}\ndel ${name}`, false);
-                                    this.refreshVariables(true);
-                                } else {
-                                    this.refreshVariables(true);
-                                }
-                            } else if (e.key === 'Escape') {
-                                this.refreshVariables(true);
+                    if (existingRows.has(name)) {
+                        // Update existing row smoothly
+                        const row = existingRows.get(name)!;
+                        const typeCell = row.querySelector('.ds-var-type');
+                        const valueCell = row.querySelector('.ds-var-value');
+
+                        if (typeCell && typeCell.textContent !== info.type) {
+                            typeCell.textContent = info.type;
+                            typeCell.classList.add('ds-var-updated');
+                            setTimeout(() => typeCell.classList.remove('ds-var-updated'), 500);
+                        }
+                        if (valueCell && valueCell.textContent !== info.value) {
+                            valueCell.textContent = info.value;
+                            valueCell.setAttribute('title', info.full_value);
+                            valueCell.classList.add('ds-var-updated');
+                            setTimeout(() => valueCell.classList.remove('ds-var-updated'), 500);
+                        }
+
+                        // Update DataFrame button visibility
+                        const actionsCell = row.querySelector('.ds-var-actions-cell');
+                        const existingViewBtn = actionsCell?.querySelector('.ds-btn-view-df');
+                        if (info.type === 'DataFrame' && !existingViewBtn && actionsCell) {
+                            const btnView = actionsCell.createEl("button", { cls: "ds-btn-view-df" });
+                            btnView.setAttribute("title", t(this.plugin.settings.language, "tooltip_view_df"));
+                            const viewIcon = btnView.createSpan({ cls: "py-btn-icon" });
+                            setIcon(viewIcon, "table");
+                            btnView.createSpan({ text: t(this.plugin.settings.language, "view") });
+                            btnView.onclick = async () => {
+                                await this.plugin.openDataFrameViewer(name);
+                            };
+                            actionsCell.insertBefore(btnView, actionsCell.firstChild);
+                        } else if (info.type !== 'DataFrame' && existingViewBtn) {
+                            existingViewBtn.remove();
+                        }
+                    } else {
+                        // Add new row with animation
+                        const row = this.createVariableRow(name, info);
+                        row.classList.add('ds-var-new');
+
+                        // Insert at correct position
+                        const allRows = Array.from(this.varTableBody.querySelectorAll('tr[data-var-name]'));
+                        let inserted = false;
+                        for (const existingRow of allRows) {
+                            const existingName = existingRow.getAttribute('data-var-name') || '';
+                            if (name < existingName) {
+                                this.varTableBody.insertBefore(row, existingRow);
+                                inserted = true;
+                                break;
                             }
-                        };
-                        input.onblur = () => this.refreshVariables(true);
-                    };
+                        }
+                        if (!inserted) {
+                            this.varTableBody.appendChild(row);
+                        }
 
-                    // TYPE
-                    row.createEl("td", { text: info.type, cls: "ds-var-type" });
-
-                    // VALEUR (Editable)
-                    const tdValue = row.createEl("td", { text: info.value, cls: "ds-var-value ds-editable" });
-                    tdValue.setAttribute("title", t(this.plugin.settings.language, "double_click_edit"));
-                    tdValue.ondblclick = () => {
-                        const input = tdValue.createEl("input", { type: "text", value: info.full_value, cls: "ds-var-input-inline" });
-                        tdValue.firstChild?.remove();
-                        input.focus();
-                        input.onkeydown = async (e) => {
-                            if (e.key === 'Enter') {
-                                let newVal = input.value;
-                                let pyCode = "";
-                                if (info.type === 'str') pyCode = `${name} = "${newVal.replace(/"/g, '\\"')}"`;
-                                else if (info.type === 'bool') pyCode = `${name} = ${newVal.toLowerCase() === 'true'}`;
-                                else pyCode = `${name} = ${info.type}(${newVal})`;
-
-                                await this.plugin.executePython(pyCode, false);
-                                this.refreshVariables(true);
-                            } else if (e.key === 'Escape') {
-                                this.refreshVariables(true);
-                            }
-                        };
-                        input.onblur = () => this.refreshVariables(true);
-                    };
-
-                    // ACTIONS (Delete)
-                    const tdActions = row.createEl("td", { cls: "ds-var-actions-cell" });
-                    const btnDel = tdActions.createEl("button", { text: "×", cls: "ds-btn-mini ds-btn-del-var" });
-                    btnDel.onclick = async () => {
-                        await this.plugin.executePython(`del ${name}`, false);
-                        this.refreshVariables(true);
-                    };
+                        setTimeout(() => row.classList.remove('ds-var-new'), 500);
+                    }
                 }
+
+                // Remove deleted variables with animation
+                existingRows.forEach((row, name) => {
+                    if (!seenVars.has(name)) {
+                        row.classList.add('ds-var-removing');
+                        setTimeout(() => row.remove(), 300);
+                    }
+                });
+
             } catch (e) {
-                this.varContainer.createEl("div", { text: t(this.plugin.settings.language, "err_read_vars"), cls: "ds-log-error" });
+                const existingError = this.varContainer.querySelector('.ds-var-error');
+                if (existingError) existingError.remove();
+                this.varContainer.createEl("div", { text: t(this.plugin.settings.language, "err_read_vars"), cls: "ds-log-error ds-var-error" });
             }
         }
+    }
+
+    private createVariableRow(name: string, info: { type: string, value: string, full_value: string }): HTMLElement {
+        const row = document.createElement('tr');
+        row.setAttribute('data-var-name', name);
+
+        // VIEW BUTTON (first column for DataFrames)
+        const tdView = row.createEl("td", { cls: "ds-var-view-cell" });
+        if (info.type === 'DataFrame') {
+            const btnView = tdView.createEl("button", { cls: "ds-btn-view-df" });
+            const viewIcon = btnView.createSpan({ cls: "py-btn-icon" });
+            setIcon(viewIcon, "table");
+            btnView.createSpan({ text: t(this.plugin.settings.language, "view"), cls: "ds-btn-text" });
+            btnView.setAttribute("title", t(this.plugin.settings.language, "tooltip_view_df"));
+            btnView.onclick = async () => {
+                await this.plugin.openDataFrameViewer(name);
+            };
+        }
+
+        // NOM (Editable)
+        const tdName = row.createEl("td", { text: name, cls: "ds-var-name ds-editable" });
+        tdName.ondblclick = () => {
+            const input = tdName.createEl("input", { type: "text", value: name, cls: "ds-var-input-inline" });
+            tdName.firstChild?.remove();
+            input.focus();
+            input.onkeydown = async (e) => {
+                if (e.key === 'Enter') {
+                    const newName = input.value.trim();
+                    if (newName && newName !== name) {
+                        await this.plugin.executePython(`${newName} = ${name}\ndel ${name}`, false);
+                        this.refreshVariables(true);
+                    } else {
+                        this.refreshVariables(true);
+                    }
+                } else if (e.key === 'Escape') {
+                    this.refreshVariables(true);
+                }
+            };
+            input.onblur = () => this.refreshVariables(true);
+        };
+
+        // TYPE
+        row.createEl("td", { text: info.type, cls: "ds-var-type" });
+
+        // VALEUR (Editable)
+        const tdValue = row.createEl("td", { text: info.value, cls: "ds-var-value ds-editable" });
+        tdValue.setAttribute("title", info.full_value);
+        tdValue.ondblclick = () => {
+            const input = tdValue.createEl("input", { type: "text", value: info.full_value, cls: "ds-var-input-inline" });
+            tdValue.firstChild?.remove();
+            input.focus();
+            input.onkeydown = async (e) => {
+                if (e.key === 'Enter') {
+                    let newVal = input.value;
+                    let pyCode = "";
+                    if (info.type === 'str') pyCode = `${name} = "${newVal.replace(/"/g, '\\"')}"`;
+                    else if (info.type === 'bool') pyCode = `${name} = ${newVal.toLowerCase() === 'true'}`;
+                    else pyCode = `${name} = ${info.type}(${newVal})`;
+
+                    await this.plugin.executePython(pyCode, false);
+                    this.refreshVariables(true);
+                } else if (e.key === 'Escape') {
+                    this.refreshVariables(true);
+                }
+            };
+            input.onblur = () => this.refreshVariables(true);
+        };
+
+        // ACTIONS (Delete only - View button moved to first column)
+        const tdActions = row.createEl("td", { cls: "ds-var-actions-cell" });
+
+        const btnDel = tdActions.createEl("button", { text: "×", cls: "ds-btn-mini ds-btn-del-var" });
+        btnDel.setAttribute("title", t(this.plugin.settings.language, "tooltip_delete_var"));
+        btnDel.onclick = async () => {
+            await this.plugin.executePython(`del ${name}`, false);
+            this.refreshVariables(true);
+        };
+
+        return row;
+    }
+
+    private showAddVariableRow() {
+        if (!this.varTableBody) return;
+
+        // Check if add row already exists
+        if (this.varTableBody.querySelector('.ds-var-row-new')) return;
+
+        const row = this.varTableBody.createEl("tr", { cls: "ds-var-row-new" });
+        row.createEl("td"); // Empty View column
+        const tdName = row.createEl("td");
+        const inputName = tdName.createEl("input", { type: "text", placeholder: t(this.plugin.settings.language, "placeholder_nom"), cls: "ds-var-input-inline" });
+
+        const tdType = row.createEl("td");
+        const selectType = tdType.createEl("select", { cls: "ds-var-select-inline" });
+        ['str', 'int', 'float', 'list', 'dict', 'bool'].forEach(t => {
+            selectType.createEl("option", { text: t, value: t });
+        });
+
+        const tdValue = row.createEl("td");
+        const inputValue = tdValue.createEl("input", { type: "text", placeholder: t(this.plugin.settings.language, "placeholder_val"), cls: "ds-var-input-inline" });
+
+        const tdActions = row.createEl("td");
+        const btnConfirm = tdActions.createEl("button", { text: "✓", cls: "ds-btn-mini ds-btn-confirm" });
+        btnConfirm.setAttribute("title", t(this.plugin.settings.language, "tooltip_confirm"));
+        btnConfirm.onclick = async () => {
+            const name = inputName.value.trim();
+            const type = selectType.value;
+            let val = inputValue.value;
+            if (!name) return;
+
+            let pyCode = "";
+            if (type === 'str') pyCode = `${name} = "${val.replace(/"/g, '\\"')}"`;
+            else if (type === 'bool') pyCode = `${name} = ${val.toLowerCase() === 'true'}`;
+            else pyCode = `${name} = ${type}(${val})`;
+
+            await this.plugin.executePython(pyCode, false);
+            this.refreshVariables(true);
+            new Notice(t(this.plugin.settings.language, "var_added"));
+        };
+        const btnCancel = tdActions.createEl("button", { text: "×", cls: "ds-btn-mini ds-btn-cancel" });
+        btnCancel.setAttribute("title", t(this.plugin.settings.language, "tooltip_cancel"));
+        btnCancel.onclick = () => row.remove();
+
+        // Insert at top
+        if (this.varTableBody.firstChild) {
+            this.varTableBody.insertBefore(row, this.varTableBody.firstChild);
+        }
+        inputName.focus();
     }
 
     async showPackageManager() {
@@ -989,6 +1250,7 @@ print(json.dumps(vars_dict))
         header.createEl("h5", { text: t(this.plugin.settings.language, "pkg_manager"), cls: "ds-var-title" });
 
         const btnRefresh = header.createEl("button", { text: t(this.plugin.settings.language, "refresh"), cls: "ds-btn-mini" });
+        btnRefresh.setAttribute("title", t(this.plugin.settings.language, "tooltip_refresh_pkgs"));
         btnRefresh.onclick = () => this.refreshPackages();
 
         // --- SECTION: INSTALLATION ---
@@ -996,6 +1258,7 @@ print(json.dumps(vars_dict))
         const inputRow = installSection.createEl("div", { cls: "ds-pip-input-row" });
         const input = inputRow.createEl("input", { type: "text", placeholder: t(this.plugin.settings.language, "pkg_name_placeholder") });
         const btnInstall = inputRow.createEl("button", { text: t(this.plugin.settings.language, "install"), cls: "ds-btn-mini" });
+        btnInstall.setAttribute("title", t(this.plugin.settings.language, "tooltip_install_pkg"));
 
         const statusArea = installSection.createEl("div", { cls: "ds-pip-status" });
 
@@ -1150,6 +1413,19 @@ print(json.dumps(__pd_get_pkgs()))
             }
         }
     }
+
+    // Update line wrapping for all editors
+    updateEditorWrap() {
+        for (const block of this.codeBlocks) {
+            if (block.editor && block.wrapCompartment) {
+                block.editor.dispatch({
+                    effects: block.wrapCompartment.reconfigure(
+                        this.plugin.settings.codeWrap ? EditorView.lineWrapping : []
+                    )
+                });
+            }
+        }
+    }
 }
 
 // --- 2. Widgets (Boutons Centrés) ---
@@ -1157,10 +1433,16 @@ class RunButtonWidget extends WidgetType {
     constructor(private plugin: PyDataPlugin, private code: string, private endLineNum: number) { super(); }
 
     toDOM(view: EditorView): HTMLElement {
+        // Wrapper pour positionnement
+        const wrapper = document.createElement("div");
+        wrapper.className = "py-btn-wrapper";
+
         const container = document.createElement("div");
-        container.className = "py-btn-container"; // Centré via CSS
+        container.className = "py-btn-container";
+        wrapper.appendChild(container);
 
         const btnInline = container.createEl("button", { cls: "py-run-btn" });
+        btnInline.setAttribute("title", t(this.plugin.settings.language, "tooltip_run_inline"));
         const iconSpan = btnInline.createSpan({ cls: "py-btn-icon" });
         setIcon(iconSpan, "play");
         btnInline.createSpan({ text: t(this.plugin.settings.language, "run") });
@@ -1178,6 +1460,7 @@ class RunButtonWidget extends WidgetType {
         };
 
         const btnStudio = container.createEl("button", { cls: "py-studio-btn" });
+        btnStudio.setAttribute("title", t(this.plugin.settings.language, "tooltip_send_studio"));
         const studioIconSpan = btnStudio.createSpan({ cls: "py-btn-icon" });
         setIcon(studioIconSpan, "layout-sidebar-right");
         btnStudio.createSpan({ text: t(this.plugin.settings.language, "studio") });
@@ -1190,7 +1473,7 @@ class RunButtonWidget extends WidgetType {
             }
         };
 
-        return container;
+        return wrapper;
     }
 }
 
@@ -1336,15 +1619,15 @@ export default class PyDataPlugin extends Plugin {
                 // Create a wrapper for the pre element to handle positioning and hover
                 const wrapper = document.createElement("div");
                 wrapper.className = "py-code-wrapper";
-                wrapper.style.position = "relative";
 
                 if (pre.parentElement) {
                     pre.parentElement.insertBefore(wrapper, pre);
                     wrapper.appendChild(pre);
-                    wrapper.appendChild(container);
+                    // Insert container inside the wrapper, before pre, so it appears on top
+                    wrapper.insertBefore(container, pre);
                 } else {
                     // Fallback if pre has no parent (unlikely)
-                    pre.appendChild(container);
+                    pre.insertBefore(container, pre.firstChild);
                 }
 
                 const btnRun = container.createEl("button", { cls: "py-run-btn" });
@@ -1405,6 +1688,160 @@ export default class PyDataPlugin extends Plugin {
             });
         });
 
+        // Plotly Embed Post Processor - renders plotly-embed code blocks as iframes
+        this.registerMarkdownPostProcessor((el, ctx) => {
+            const plotlyBlocks = el.querySelectorAll("code.language-plotly-embed");
+            plotlyBlocks.forEach(async (codeElement) => {
+                const pre = codeElement.parentElement;
+                if (!pre) return;
+
+                const filePath = codeElement.textContent?.trim();
+                if (!filePath) return;
+
+                // Create plotly container to replace the code block
+                const plotlyContainer = document.createElement("div");
+                plotlyContainer.className = "plotly-container md-plotly-embed";
+
+                // Create controls
+                const controls = document.createElement("div");
+                controls.className = "plotly-controls";
+
+                const btnFullscreen = document.createElement("button");
+                btnFullscreen.className = "plotly-btn";
+                const fsIcon = document.createElement("span");
+                fsIcon.className = "py-btn-icon";
+                setIcon(fsIcon, "maximize-2");
+                btnFullscreen.appendChild(fsIcon);
+                btnFullscreen.appendChild(document.createTextNode(" Fullscreen"));
+                controls.appendChild(btnFullscreen);
+
+                const btnOpen = document.createElement("button");
+                btnOpen.className = "plotly-btn";
+                const openIcon = document.createElement("span");
+                openIcon.className = "py-btn-icon";
+                setIcon(openIcon, "external-link");
+                btnOpen.appendChild(openIcon);
+                btnOpen.appendChild(document.createTextNode(" Open"));
+                controls.appendChild(btnOpen);
+
+                plotlyContainer.appendChild(controls);
+
+                // Create iframe
+                const iframe = document.createElement("iframe") as HTMLIFrameElement;
+                iframe.className = "plotly-iframe";
+                iframe.setAttribute("sandbox", "allow-scripts allow-same-origin");
+
+                // Load the HTML file content
+                try {
+                    const file = this.app.vault.getAbstractFileByPath(filePath);
+                    if (file instanceof TFile) {
+                        const htmlContent = await this.app.vault.read(file);
+                        // Use helper method for consistent resize behavior
+                        iframe.srcdoc = this.prepareEmbeddedPlotlyHtml(htmlContent);
+                    } else {
+                        iframe.srcdoc = `<html><body><p style="color:red">File not found: ${filePath}</p></body></html>`;
+                    }
+                } catch (e: any) {
+                    iframe.srcdoc = `<html><body><p style="color:red">Error loading: ${e.message || e}</p></body></html>`;
+                }
+
+                plotlyContainer.appendChild(iframe);
+
+                // Fullscreen toggle - use helper method
+                btnFullscreen.onclick = () => {
+                    // Get the original HTML (before our modifications)
+                    const file = this.app.vault.getAbstractFileByPath(filePath);
+                    if (file instanceof TFile) {
+                        this.app.vault.read(file).then(originalHtml => {
+                            this.showPlotlyFullscreen(originalHtml);
+                        });
+                    } else {
+                        // Fallback to iframe content
+                        this.showPlotlyFullscreen(iframe.srcdoc);
+                    }
+                };
+
+                // Open in new tab
+                btnOpen.onclick = async () => {
+                    try {
+                        const file = this.app.vault.getAbstractFileByPath(filePath);
+                        if (file instanceof TFile) {
+                            await this.app.workspace.openLinkText(filePath, ctx.sourcePath, true);
+                        }
+                    } catch (e) {
+                        console.error("Error opening plotly file:", e);
+                    }
+                };
+
+                // Replace the pre element with plotly container
+                if (pre.parentElement) {
+                    pre.parentElement.replaceChild(plotlyContainer, pre);
+                }
+            });
+        });
+
+        // Plotly Base64 Post Processor - renders plotly-base64 code blocks (inline encoded)
+        this.registerMarkdownPostProcessor((el, ctx) => {
+            const plotlyBlocks = el.querySelectorAll("code.language-plotly-base64");
+            plotlyBlocks.forEach((codeElement) => {
+                const pre = codeElement.parentElement;
+                if (!pre) return;
+
+                const base64Content = codeElement.textContent?.trim();
+                if (!base64Content) return;
+
+                // Decode base64 to HTML
+                let htmlContent = "";
+                try {
+                    htmlContent = decodeURIComponent(escape(atob(base64Content)));
+                } catch (e) {
+                    console.error("Failed to decode Plotly base64:", e);
+                    return;
+                }
+
+                // Create plotly container to replace the code block
+                const plotlyContainer = document.createElement("div");
+                plotlyContainer.className = "plotly-container md-plotly-embed";
+
+                // Create controls
+                const controls = document.createElement("div");
+                controls.className = "plotly-controls";
+
+                const btnFullscreen = document.createElement("button");
+                btnFullscreen.className = "plotly-btn";
+                const fsIcon = document.createElement("span");
+                fsIcon.className = "py-btn-icon";
+                setIcon(fsIcon, "maximize-2");
+                btnFullscreen.appendChild(fsIcon);
+                btnFullscreen.appendChild(document.createTextNode(" Fullscreen"));
+                controls.appendChild(btnFullscreen);
+
+                plotlyContainer.appendChild(controls);
+
+                // Create iframe
+                const iframe = document.createElement("iframe") as HTMLIFrameElement;
+                iframe.className = "plotly-iframe";
+                iframe.setAttribute("sandbox", "allow-scripts allow-same-origin");
+
+                // Use helper method for consistent resize behavior
+                const originalHtml = htmlContent; // Keep original for fullscreen
+                iframe.srcdoc = this.prepareEmbeddedPlotlyHtml(htmlContent);
+
+                plotlyContainer.appendChild(iframe);
+
+                // Fullscreen toggle - use helper method
+                btnFullscreen.onclick = () => {
+                    // Decode the original HTML for fullscreen
+                    this.showPlotlyFullscreen(originalHtml);
+                };
+
+                // Replace the pre element with plotly container
+                if (pre.parentElement) {
+                    pre.parentElement.replaceChild(plotlyContainer, pre);
+                }
+            });
+        });
+
         this.app.workspace.onLayoutReady(() => this.initPyodide());
 
         this.registerEvent(
@@ -1420,9 +1857,24 @@ export default class PyDataPlugin extends Plugin {
                             result.error.split('\n').forEach((line: string) => markdown += `> ${line}\n`);
                         } else {
                             if (result.text) {
-                                markdown += `> \`\`\`text\n`;
-                                result.text.split('\n').forEach((line: string) => markdown += `> ${line}\n`);
-                                markdown += `> \`\`\`\n`;
+                                // Check if it's Plotly HTML - use processPlotlyHtml with settings
+                                if (this.isPlotlyHtml(result.text)) {
+                                    try {
+                                        const plotlyResult = await this.processPlotlyHtml(result.text, info.file?.path || "");
+                                        if (plotlyResult) {
+                                            markdown += plotlyResult.markdown;
+                                        }
+                                    } catch (e: any) {
+                                        markdown += `> \`\`\`html\n`;
+                                        result.text.split('\n').slice(0, 50).forEach((line: string) => markdown += `> ${line}\n`);
+                                        markdown += `> ... (truncated)\n`;
+                                        markdown += `> \`\`\`\n`;
+                                    }
+                                } else {
+                                    markdown += `> \`\`\`text\n`;
+                                    result.text.split('\n').forEach((line: string) => markdown += `> ${line}\n`);
+                                    markdown += `> \`\`\`\n`;
+                                }
                             }
                             if (result.image) {
                                 const imageLink = await this.processImage(result.image, info.file ? info.file.path : "");
@@ -1535,6 +1987,8 @@ export default class PyDataPlugin extends Plugin {
                         import micropip
                         try: await micropip.install("seaborn")
                         except: pass
+                        try: await micropip.install("plotly")
+                        except: pass
                         import pyodide_http
                         pyodide_http.patch_all()
                     `);
@@ -1553,6 +2007,9 @@ export default class PyDataPlugin extends Plugin {
                         `);
                         await this.yieldToUI();
                     }
+
+                    // Setup Obsidian bridge for Python vault access
+                    await this.setupObsidianBridge();
                 });
                 this.pyodideReady = true;
                 new Notice(t(this.settings.language, "python_ready"));
@@ -1635,6 +2092,31 @@ try:
 except ImportError:
     __pd_has_matplotlib = False
 
+# Plotly support
+try:
+    import plotly.graph_objects as go
+    import plotly.express as px
+    import plotly.io as pio
+    __pd_has_plotly = True
+    
+    # Override Figure.show to capture HTML
+    def __pd_plotly_show(self, *args, **kwargs):
+        html = self.to_html(include_plotlyjs='cdn', full_html=True)
+        print(f'__PLOTLY_HTML_START__{html}__PLOTLY_HTML_END__')
+    
+    go.Figure.show = __pd_plotly_show
+    
+    # Override pio.show
+    def __pd_pio_show(fig, *args, **kwargs):
+        if hasattr(fig, 'to_html'):
+            html = fig.to_html(include_plotlyjs='cdn', full_html=True)
+            print(f'__PLOTLY_HTML_START__{html}__PLOTLY_HTML_END__')
+    
+    pio.show = __pd_pio_show
+    
+except ImportError:
+    __pd_has_plotly = False
+
 if __pd_has_matplotlib:
     plt.clf()
 
@@ -1664,8 +2146,22 @@ if __pd_has_matplotlib:
             // Yield after to allow UI to catch up
             await this.yieldToUI();
 
+            // Extract Plotly HTML if present
+            const plotlyMatch = stdout.match(/__PLOTLY_HTML_START__([\s\S]*?)__PLOTLY_HTML_END__/);
+            let plotlyHtml = null;
+            if (plotlyMatch) {
+                plotlyHtml = plotlyMatch[1];
+                stdout = stdout.replace(/__PLOTLY_HTML_START__[\s\S]*?__PLOTLY_HTML_END__\n?/g, '');
+            }
+
             const plotMatch = stdout.match(/__PLOT_DATA__:([A-Za-z0-9+/=]+)/);
-            const cleanStdout = stdout.replace(/__PLOT_DATA__:[A-Za-z0-9+/=]+\n?/, '').trim();
+            let cleanStdout = stdout.replace(/__PLOT_DATA__:[A-Za-z0-9+/=]+\n?/, '').trim();
+
+            // If we have Plotly HTML, include it in the text output for rendering
+            if (plotlyHtml) {
+                cleanStdout = plotlyHtml;
+            }
+
             let err = stderr ? stderr : undefined;
             if (err && err.includes("ModuleNotFoundError")) {
                 const match = err.match(/ModuleNotFoundError: (?:The module )?'([^']+)'/);
@@ -1691,11 +2187,16 @@ if __pd_has_matplotlib:
             return;
         }
 
+
         let block = `\n> [!abstract] ${t(this.settings.language, "result_python")}\n`;
         if (res.error) {
             block = `\n> [!error] ${t(this.settings.language, "error_python")}\n`;
+            // AJOUT : Protection code block
+            block += `> \`\`\`text\n`;
             res.error.split('\n').forEach(line => block += `> ${line}\n`);
+            block += `> \`\`\`\n`;
         } else {
+            // ... reste du code ...
             if (res.text) {
                 block += `> \`\`\`text\n`;
                 res.text.split('\n').forEach(line => block += `> ${line}\n`);
@@ -1721,12 +2222,33 @@ if __pd_has_matplotlib:
         let resultBlock = `> [!abstract] ${t(this.settings.language, "result_python")}\n`;
         if (res.error) {
             resultBlock = `> [!error] ${t(this.settings.language, "error_python")}\n`;
+            // AJOUT : On ouvre un bloc de code text pour protéger les chevrons < >
+            resultBlock += `> \`\`\`text\n`;
             res.error.split('\n').forEach(line => resultBlock += `> ${line}\n`);
+            // AJOUT : On ferme le bloc de code
+            resultBlock += `> \`\`\`\n`;
         } else {
             if (res.text) {
-                resultBlock += `> \`\`\`text\n`;
-                res.text.split('\n').forEach(line => resultBlock += `> ${line}\n`);
-                resultBlock += `> \`\`\`\n`;
+                // Check if it's Plotly HTML - use processPlotlyHtml with settings
+                if (this.isPlotlyHtml(res.text)) {
+                    const activeFile = this.app.workspace.getActiveFile();
+                    try {
+                        const plotlyResult = await this.processPlotlyHtml(res.text, activeFile?.path || "");
+                        if (plotlyResult) {
+                            resultBlock += plotlyResult.markdown;
+                        }
+                    } catch (e: any) {
+                        // If file creation fails, include raw HTML in code block
+                        resultBlock += `> \`\`\`html\n`;
+                        res.text.split('\n').slice(0, 50).forEach(line => resultBlock += `> ${line}\n`);
+                        resultBlock += `> ... (truncated)\n`;
+                        resultBlock += `> \`\`\`\n`;
+                    }
+                } else {
+                    resultBlock += `> \`\`\`text\n`;
+                    res.text.split('\n').forEach(line => resultBlock += `> ${line}\n`);
+                    resultBlock += `> \`\`\`\n`;
+                }
             }
             if (res.image) {
                 const activeFile = this.app.workspace.getActiveFile();
@@ -1828,9 +2350,25 @@ if __pd_has_matplotlib:
                 res.error.split('\n').forEach(line => resultBlock += `> ${line}\n`);
             } else {
                 if (res.text) {
-                    resultBlock += `> \`\`\`text\n`;
-                    res.text.split('\n').forEach(line => resultBlock += `> ${line}\n`);
-                    resultBlock += `> \`\`\`\n`;
+                    // Check if it's Plotly HTML - use processPlotlyHtml with settings
+                    if (this.isPlotlyHtml(res.text)) {
+                        try {
+                            const plotlyResult = await this.processPlotlyHtml(res.text, filePath);
+                            if (plotlyResult) {
+                                resultBlock += plotlyResult.markdown;
+                            }
+                        } catch (e: any) {
+                            // If file creation fails, include raw HTML in code block
+                            resultBlock += `> \`\`\`html\n`;
+                            res.text.split('\n').slice(0, 50).forEach(line => resultBlock += `> ${line}\n`);
+                            resultBlock += `> ... (truncated)\n`;
+                            resultBlock += `> \`\`\`\n`;
+                        }
+                    } else {
+                        resultBlock += `> \`\`\`text\n`;
+                        res.text.split('\n').forEach(line => resultBlock += `> ${line}\n`);
+                        resultBlock += `> \`\`\`\n`;
+                    }
                 }
                 if (res.image) {
                     const imageLink = await this.processImage(res.image, filePath);
@@ -1981,7 +2519,8 @@ if __pd_has_matplotlib:
                 return "";
             }
             const text = await res.text();
-            const path = normalizePath(desiredPath || 'SHOWCASE_EXAMPLES.md');
+            const path = normalizePath(desiredPath || 'Showcase_Python_DS_Studio.md');
+
             let finalPath = path;
             let counter = 1;
             while (this.app.vault.getAbstractFileByPath(finalPath)) {
@@ -2010,7 +2549,7 @@ if __pd_has_matplotlib:
      */
     async downloadBinaryToVault(url: string, desiredPath: string, githubToken?: string): Promise<string> {
         try {
-            const headers: Record<string,string> = {};
+            const headers: Record<string, string> = {};
             if (githubToken) headers['Authorization'] = `token ${githubToken}`;
             const res = await fetch(url, { headers });
             if (!res.ok) {
@@ -2134,7 +2673,7 @@ if __pd_has_matplotlib:
         try {
             const localVer = await this.getLocalPackageVersion();
             const apiUrl = 'https://api.github.com/repos/infinition/obsidian-python-ds-studio/releases/latest';
-            const headers: Record<string,string> = { 'Accept': 'application/vnd.github.v3+json' };
+            const headers: Record<string, string> = { 'Accept': 'application/vnd.github.v3+json' };
             if (this.settings.githubToken) headers['Authorization'] = `token ${this.settings.githubToken}`;
             const res = await fetch(apiUrl, { headers });
             if (!res.ok) {
@@ -2193,7 +2732,7 @@ if __pd_has_matplotlib:
     async installLatestRelease(): Promise<boolean> {
         try {
             const apiUrl = 'https://api.github.com/repos/infinition/obsidian-python-ds-studio/releases/latest';
-            const headers: Record<string,string> = { 'Accept': 'application/vnd.github.v3+json' };
+            const headers: Record<string, string> = { 'Accept': 'application/vnd.github.v3+json' };
             if (this.settings.githubToken) headers['Authorization'] = `token ${this.settings.githubToken}`;
             const res = await fetch(apiUrl, { headers });
             if (!res.ok) {
@@ -2228,7 +2767,7 @@ if __pd_has_matplotlib:
             new Notice(t(this.settings.language, 'update_downloading'));
             let arrayBuffer: ArrayBuffer | null = null;
             try {
-                const dlHeaders: Record<string,string> = {};
+                const dlHeaders: Record<string, string> = {};
                 if (this.settings.githubToken) dlHeaders['Authorization'] = `token ${this.settings.githubToken}`;
                 const bufRes = await fetch(downloadUrl, { headers: dlHeaders });
                 if (!bufRes.ok) {
@@ -2320,16 +2859,16 @@ if __pd_has_matplotlib:
 
             new Notice(`Installed latest release ${remoteTag}. Reloading plugin...`);
             // Try to reload plugin
-                try {
-                    // plugin id assumed to be folder name
-                    const pluginsApi = (this.app as any).plugins;
-                    if (pluginsApi && typeof pluginsApi.reloadPlugin === 'function') {
-                        pluginsApi.reloadPlugin('obsidian-python-ds-studio');
-                    } else if (pluginsApi && typeof pluginsApi.disablePlugin === 'function' && typeof pluginsApi.enablePlugin === 'function') {
-                        await pluginsApi.disablePlugin('obsidian-python-ds-studio');
-                        await pluginsApi.enablePlugin('obsidian-python-ds-studio');
-                    }
-                } catch (e) {
+            try {
+                // plugin id assumed to be folder name
+                const pluginsApi = (this.app as any).plugins;
+                if (pluginsApi && typeof pluginsApi.reloadPlugin === 'function') {
+                    pluginsApi.reloadPlugin('obsidian-python-ds-studio');
+                } else if (pluginsApi && typeof pluginsApi.disablePlugin === 'function' && typeof pluginsApi.enablePlugin === 'function') {
+                    await pluginsApi.disablePlugin('obsidian-python-ds-studio');
+                    await pluginsApi.enablePlugin('obsidian-python-ds-studio');
+                }
+            } catch (e) {
                 console.warn('Could not reload plugin programmatically, please reload Obsidian or disable/enable the plugin manually.', e);
             }
 
@@ -2349,7 +2888,7 @@ if __pd_has_matplotlib:
     async updatePlugin(): Promise<void> {
         try {
             const releaseUrl = 'https://api.github.com/repos/infinition/obsidian-python-ds-studio/releases/latest';
-            const headers: Record<string,string> = { 'Accept': 'application/vnd.github.v3+json' };
+            const headers: Record<string, string> = { 'Accept': 'application/vnd.github.v3+json' };
             if (this.settings.githubToken) headers['Authorization'] = `token ${this.settings.githubToken}`;
 
             new Notice(t(this.settings.language, 'checking_for_updates') || 'Checking for updates...');
@@ -2435,6 +2974,517 @@ if __pd_has_matplotlib:
             new Notice('Update failed: ' + (e && e.message ? e.message : String(e)));
         }
     }
+
+    // --- DATAFRAME VIEWER ---
+    /**
+     * Open the DataFrame viewer modal for a specific variable
+     */
+    async openDataFrameViewer(variableName: string): Promise<void> {
+        try {
+            const code = getDataFrameExtractionCode(variableName);
+            const result = await this.executePython(code, false);
+
+            if (result.error) {
+                new Notice(`Error: ${result.error}`);
+                return;
+            }
+
+            if (!result.text) {
+                new Notice("No data returned from DataFrame");
+                return;
+            }
+
+            try {
+                const dfData: DataFrameData = JSON.parse(result.text);
+
+                const modal = new DataFrameViewerModal(this.app, dfData, {
+                    variableName,
+                    language: this.settings.language,
+                    executePython: async (code: string, wrap?: boolean) => {
+                        return await this.executePython(code, wrap ?? false);
+                    },
+                    onClose: () => {
+                        // Refresh variables after closing the viewer
+                        if (this.view) this.view.refreshVariables();
+                    }
+                });
+
+                modal.open();
+            } catch (parseError) {
+                console.error("Error parsing DataFrame data:", parseError);
+                new Notice("Error parsing DataFrame data");
+            }
+        } catch (e: any) {
+            console.error("Error opening DataFrame viewer:", e);
+            new Notice(`Error: ${e.message || e}`);
+        }
+    }
+
+    // --- SETUP OBSIDIAN BRIDGE FOR PYTHON ---
+    /**
+     * Setup the obsidian module bridge for Python access to the vault
+     */
+    async setupObsidianBridge(): Promise<void> {
+        try {
+            // Create the bridge API
+            const bridgeAPI = createObsidianBridge(this.app);
+
+            // Expose to window for Python access
+            (window as any).__obsidian_bridge__ = bridgeAPI;
+
+            // Get the Python module code
+            const pythonModuleCode = getObsidianModulePythonCode();
+
+            // Register the module in Pyodide
+            if (this.pyodide) {
+                await this.pyodide.runPythonAsync(`
+import sys
+import types
+
+# Create obsidian module
+obsidian = types.ModuleType('obsidian')
+exec('''${pythonModuleCode.replace(/'/g, "\\'")}''', obsidian.__dict__)
+sys.modules['obsidian'] = obsidian
+                `);
+                console.log("PyData: Obsidian bridge initialized");
+            }
+        } catch (e) {
+            console.error("Error setting up Obsidian bridge:", e);
+        }
+    }
+
+    // --- PLOTLY HTML HANDLING ---
+    /**
+     * Detect and render Plotly HTML output
+     */
+    renderPlotlyHtml(html: string, container: HTMLElement): HTMLElement {
+        const plotlyContainer = container.createEl("div", { cls: "plotly-container" });
+
+        // Create controls
+        const controls = plotlyContainer.createEl("div", { cls: "plotly-controls" });
+
+        const btnFullscreen = controls.createEl("button", { cls: "plotly-btn" });
+        const fsIcon = btnFullscreen.createSpan({ cls: "py-btn-icon" });
+        setIcon(fsIcon, "maximize-2");
+        btnFullscreen.createSpan({ text: t(this.settings.language, "fullscreen") });
+
+        const btnSave = controls.createEl("button", { cls: "plotly-btn" });
+        const saveIcon = btnSave.createSpan({ cls: "py-btn-icon" });
+        setIcon(saveIcon, "download");
+        btnSave.createSpan({ text: " HTML" });
+
+        // Create iframe
+        const iframe = plotlyContainer.createEl("iframe", { cls: "plotly-iframe" }) as HTMLIFrameElement;
+        iframe.setAttribute("sandbox", "allow-scripts allow-same-origin");
+
+        // Use helper method for consistent resize behavior
+        iframe.srcdoc = this.prepareEmbeddedPlotlyHtml(html);
+
+        // Fullscreen toggle - use helper method
+        btnFullscreen.onclick = () => {
+            this.showPlotlyFullscreen(html);
+        };
+
+        // Save HTML - uses settings for save mode
+        btnSave.onclick = async () => {
+            try {
+                const activeFile = this.app.workspace.getActiveFile();
+                const sourcePath = activeFile?.path || "";
+                const result = await this.processPlotlyHtml(html, sourcePath);
+
+                if (result && result.filePath) {
+                    new Notice(t(this.settings.language, "plotly_saved").replace("{0}", result.filePath));
+                } else {
+                    new Notice("Plotly chart saved");
+                }
+            } catch (e: any) {
+                console.error("Error saving Plotly HTML:", e);
+                new Notice(`Error saving: ${e.message || e}`);
+            }
+        };
+
+        return plotlyContainer;
+    }
+
+    /**
+     * Check if output contains Plotly HTML
+     */
+    isPlotlyHtml(text: string): boolean {
+        return text.includes("plotly.js") ||
+            text.includes("Plotly.newPlot") ||
+            text.includes('class="plotly-graph-div"');
+    }
+
+    /**
+     * Prepare Plotly HTML for embedded iframe with resize script
+     */
+    prepareEmbeddedPlotlyHtml(html: string): string {
+        // Script that forces Plotly to resize to fill the container
+        // Uses MutationObserver and plotly_afterplot event for reliable detection
+        const resizeScript = `
+<script>
+(function() {
+    var resizeAttempts = 0;
+    var maxAttempts = 50;
+    
+    function resizePlotly() {
+        var plots = document.querySelectorAll('.plotly-graph-div, .js-plotly-plot');
+        var resized = false;
+        
+        plots.forEach(function(plot) {
+            // Check if Plotly is loaded and the plot has been initialized
+            if (window.Plotly && (plot._fullLayout || plot.layout)) {
+                try {
+                    Plotly.relayout(plot, {
+                        width: document.body.clientWidth || window.innerWidth,
+                        height: document.body.clientHeight || window.innerHeight,
+                        autosize: true
+                    });
+                    resized = true;
+                } catch(e) {
+                    console.log('Plotly resize error:', e);
+                }
+            }
+        });
+        
+        // If not resized yet and still have attempts, retry
+        if (!resized && resizeAttempts < maxAttempts) {
+            resizeAttempts++;
+            setTimeout(resizePlotly, 100);
+        }
+    }
+    
+    // Listen for Plotly's afterplot event (most reliable)
+    document.addEventListener('plotly_afterplot', function() {
+        setTimeout(resizePlotly, 50);
+    });
+    
+    // Also observe DOM for when Plotly adds content
+    var observer = new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+            if (mutation.addedNodes.length > 0) {
+                setTimeout(resizePlotly, 100);
+            }
+        });
+    });
+    
+    // Start observing once DOM is ready
+    if (document.body) {
+        observer.observe(document.body, { childList: true, subtree: true });
+    } else {
+        document.addEventListener('DOMContentLoaded', function() {
+            observer.observe(document.body, { childList: true, subtree: true });
+        });
+    }
+    
+    // Resize on window load
+    window.addEventListener('load', function() {
+        setTimeout(resizePlotly, 100);
+        setTimeout(resizePlotly, 300);
+        setTimeout(resizePlotly, 600);
+    });
+    
+    // Resize on window resize
+    window.addEventListener('resize', resizePlotly);
+    
+    // Start trying immediately
+    setTimeout(resizePlotly, 50);
+    setTimeout(resizePlotly, 200);
+    setTimeout(resizePlotly, 500);
+})();
+</script>`;
+
+        const embedStyle = `<style>
+            html, body { 
+                margin: 0; 
+                padding: 0; 
+                width: 100%; 
+                height: 100%; 
+                overflow: hidden;
+            }
+            .plotly-graph-div, .js-plotly-plot { 
+                width: 100% !important; 
+                height: 100% !important; 
+            }
+            .modebar { z-index: 1000 !important; }
+            .modebar-container { position: absolute !important; top: 5px !important; right: 5px !important; }
+        </style>`;
+
+        let modifiedHtml = html;
+
+        // Insert style
+        if (html.includes('</head>')) {
+            modifiedHtml = modifiedHtml.replace('</head>', embedStyle + '</head>');
+        } else if (html.includes('<body')) {
+            modifiedHtml = modifiedHtml.replace('<body', embedStyle + '<body');
+        } else {
+            modifiedHtml = embedStyle + modifiedHtml;
+        }
+
+        // Insert resize script before </body> or at the end
+        if (modifiedHtml.includes('</body>')) {
+            modifiedHtml = modifiedHtml.replace('</body>', resizeScript + '</body>');
+        } else {
+            modifiedHtml = modifiedHtml + resizeScript;
+        }
+
+        return modifiedHtml;
+    }
+
+    /**
+     * Prepare Plotly HTML for fullscreen display with auto-resize script
+     */
+    prepareFullscreenPlotlyHtml(html: string): string {
+        // Script that forces Plotly to resize to fill the container
+        // Uses MutationObserver and plotly_afterplot event for reliable detection
+        const resizeScript = `
+<script>
+(function() {
+    var resizeAttempts = 0;
+    var maxAttempts = 50;
+    
+    function resizePlotly() {
+        var plots = document.querySelectorAll('.plotly-graph-div, .js-plotly-plot');
+        var resized = false;
+        
+        plots.forEach(function(plot) {
+            // Check if Plotly is loaded and the plot has been initialized
+            if (window.Plotly && (plot._fullLayout || plot.layout)) {
+                try {
+                    Plotly.relayout(plot, {
+                        width: window.innerWidth,
+                        height: window.innerHeight - 10,
+                        autosize: true
+                    });
+                    resized = true;
+                } catch(e) {
+                    console.log('Plotly resize error:', e);
+                }
+            }
+        });
+        
+        // If not resized yet and still have attempts, retry
+        if (!resized && resizeAttempts < maxAttempts) {
+            resizeAttempts++;
+            setTimeout(resizePlotly, 100);
+        }
+    }
+    
+    // Listen for Plotly's afterplot event (most reliable)
+    document.addEventListener('plotly_afterplot', function() {
+        setTimeout(resizePlotly, 50);
+    });
+    
+    // Also observe DOM for when Plotly adds content
+    var observer = new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+            if (mutation.addedNodes.length > 0) {
+                setTimeout(resizePlotly, 100);
+            }
+        });
+    });
+    
+    // Start observing once DOM is ready
+    if (document.body) {
+        observer.observe(document.body, { childList: true, subtree: true });
+    } else {
+        document.addEventListener('DOMContentLoaded', function() {
+            observer.observe(document.body, { childList: true, subtree: true });
+        });
+    }
+    
+    // Resize on load
+    window.addEventListener('load', function() {
+        setTimeout(resizePlotly, 100);
+        setTimeout(resizePlotly, 300);
+        setTimeout(resizePlotly, 600);
+    });
+    
+    // Resize on window resize
+    window.addEventListener('resize', resizePlotly);
+    
+    // Also try immediately and after short delays
+    setTimeout(resizePlotly, 50);
+    setTimeout(resizePlotly, 200);
+    setTimeout(resizePlotly, 500);
+})();
+</script>`;
+
+        const fsStyle = `<style>
+            html, body { 
+                margin: 0; 
+                padding: 0; 
+                width: 100%; 
+                height: 100%; 
+                overflow: hidden;
+                background: white;
+            }
+            .plotly-graph-div, .js-plotly-plot { 
+                width: 100% !important; 
+                height: 100% !important; 
+            }
+            .modebar { z-index: 1000 !important; }
+        </style>`;
+
+        let modifiedHtml = html;
+
+        // Insert style
+        if (html.includes('</head>')) {
+            modifiedHtml = modifiedHtml.replace('</head>', fsStyle + '</head>');
+        } else {
+            modifiedHtml = fsStyle + modifiedHtml;
+        }
+
+        // Insert resize script before </body> or at the end
+        if (modifiedHtml.includes('</body>')) {
+            modifiedHtml = modifiedHtml.replace('</body>', resizeScript + '</body>');
+        } else {
+            modifiedHtml = modifiedHtml + resizeScript;
+        }
+
+        return modifiedHtml;
+    }
+
+    /**
+     * Create and show fullscreen Plotly overlay
+     */
+    showPlotlyFullscreen(html: string, title: string = '📊 Interactive Plotly Chart') {
+        const overlay = document.createElement('div');
+        overlay.className = 'plotly-fullscreen-overlay';
+
+        // Header with close button
+        const header = document.createElement('div');
+        header.className = 'plotly-fs-header';
+
+        const titleEl = document.createElement('span');
+        titleEl.className = 'plotly-fs-title';
+        titleEl.textContent = title;
+        header.appendChild(titleEl);
+
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'plotly-fs-close';
+        closeBtn.innerHTML = '✕ Close (Esc)';
+        closeBtn.onclick = () => {
+            overlay.remove();
+            document.removeEventListener('keydown', escHandler);
+        };
+        header.appendChild(closeBtn);
+        overlay.appendChild(header);
+
+        // Content area with iframe
+        const content = document.createElement('div');
+        content.className = 'plotly-fs-content';
+
+        const fsIframe = document.createElement('iframe') as HTMLIFrameElement;
+        fsIframe.className = 'plotly-fs-iframe';
+        fsIframe.setAttribute("sandbox", "allow-scripts allow-same-origin");
+        fsIframe.srcdoc = this.prepareFullscreenPlotlyHtml(html);
+
+        content.appendChild(fsIframe);
+        overlay.appendChild(content);
+        document.body.appendChild(overlay);
+
+        // Close on Escape key
+        const escHandler = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                overlay.remove();
+                document.removeEventListener('keydown', escHandler);
+            }
+        };
+        document.addEventListener('keydown', escHandler);
+    }
+
+    /**
+     * Process Plotly HTML according to save mode settings (same as images)
+     * Returns: { filePath: string, markdown: string }
+     */
+    async processPlotlyHtml(htmlContent: string, sourcePath: string): Promise<{ filePath: string, markdown: string }> {
+        const mode = this.settings.imageSaveMode;
+
+        // For base64 mode, encode HTML inline in markdown
+        if (mode === 'base64') {
+            const base64Content = btoa(unescape(encodeURIComponent(htmlContent)));
+            return {
+                filePath: "",
+                markdown: `> 📊 **Interactive Plotly Chart** (embedded)\n> \n> \`\`\`plotly-base64\n> ${base64Content}\n> \`\`\`\n`
+            };
+        }
+
+        // For other modes, save to file
+        let folderPath = "";
+
+        if (mode === 'root') {
+            // Save next to source file
+            const file = this.app.vault.getAbstractFileByPath(sourcePath);
+            if (file && file.parent) {
+                folderPath = file.parent.path;
+            }
+        } else if (mode === 'folder') {
+            folderPath = this.settings.imageFolderPath;
+        }
+
+        const timestamp = new Date().getTime();
+        const defaultFileName = `plotly_chart_${timestamp}.html`;
+
+        if (mode === 'ask') {
+            return new Promise((resolve) => {
+                new ImageSaveModal(this.app, this, defaultFileName, this.settings.imageFolderPath || "", async (result) => {
+                    const finalPath = await this.savePlotlyToVault(htmlContent, result.fileName, result.folderPath);
+                    resolve({
+                        filePath: finalPath,
+                        markdown: this.buildPlotlyMarkdown(finalPath, result.fileName)
+                    });
+                }).open();
+            });
+        }
+
+        const finalPath = await this.savePlotlyToVault(htmlContent, defaultFileName, folderPath);
+        return {
+            filePath: finalPath,
+            markdown: this.buildPlotlyMarkdown(finalPath, defaultFileName)
+        };
+    }
+
+    /**
+     * Save Plotly HTML to vault
+     */
+    async savePlotlyToVault(htmlContent: string, fileName: string, folderPath: string): Promise<string> {
+        // Ensure folder exists
+        if (folderPath) {
+            const folder = this.app.vault.getAbstractFileByPath(folderPath);
+            if (!folder) {
+                await this.app.vault.createFolder(folderPath);
+            }
+        }
+
+        const path = normalizePath(folderPath ? `${folderPath}/${fileName}` : fileName);
+
+        // Check if file exists
+        let finalPath = path;
+        let counter = 1;
+        while (this.app.vault.getAbstractFileByPath(finalPath)) {
+            const extIndex = path.lastIndexOf('.');
+            if (extIndex > -1) {
+                const base = path.substring(0, extIndex);
+                const ext = path.substring(extIndex);
+                finalPath = `${base}_${counter}${ext}`;
+            } else {
+                finalPath = `${path}_${counter}`;
+            }
+            counter++;
+        }
+
+        await this.app.vault.create(finalPath, htmlContent);
+        return finalPath;
+    }
+
+    /**
+     * Build markdown for Plotly embed
+     */
+    buildPlotlyMarkdown(filePath: string, fileName: string): string {
+        const displayName = fileName.replace('.html', '');
+        return `> 📊 **Interactive Plotly Chart**\n> [[${fileName}|${displayName}]]\n> \n> \`\`\`plotly-embed\n> ${filePath}\n> \`\`\`\n`;
+    }
 }
 
 class PyDataSettingTab extends PluginSettingTab {
@@ -2463,6 +3513,20 @@ class PyDataSettingTab extends PluginSettingTab {
                     this.plugin.settings.language = value;
                     await this.plugin.saveSettings();
                     this.display(); // Refresh to update labels
+                }));
+
+        new Setting(containerEl)
+            .setName(t(this.plugin.settings.language, "settings_code_wrap"))
+            .setDesc(t(this.plugin.settings.language, "settings_code_wrap_desc"))
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.codeWrap)
+                .onChange(async (value) => {
+                    this.plugin.settings.codeWrap = value;
+                    await this.plugin.saveSettings();
+                    // Update editors if view is open
+                    if (this.plugin.view) {
+                        this.plugin.view.updateEditorWrap();
+                    }
                 }));
 
         new Setting(containerEl)
@@ -2625,21 +3689,21 @@ except Exception as e:
         const showcaseHeader = containerEl.createEl('div', { cls: 'ds-pip-mem-section' });
         showcaseHeader.createEl('h3', { text: 'Showcase & Examples' });
 
-        const showcaseDesc = containerEl.createEl('div', { text: 'Download example .md file from the repository (SHOWCASE_EXAMPLES.md)', cls: 'setting-item-description' });
+        const showcaseDesc = containerEl.createEl('div', { text: 'Download example .md file from the repository (Showcase_Python_DS_Studio.md)', cls: 'setting-item-description' });
         new Setting(containerEl)
             .addButton(btn => btn
-                .setButtonText('Download SHOWCASE_EXAMPLES.md')
+                .setButtonText('Download Showcase_Python_DS_Studio.md')
                 .setCta()
                 .onClick(async () => {
                     btn.setDisabled(true);
                     btn.setButtonText('Downloading...');
-                    const rawUrl = 'https://raw.githubusercontent.com/infinition/obsidian-python-ds-studio/main/SHOWCASE_EXAMPLES.md';
-                    const saved = await this.plugin.downloadTextFileToVault(rawUrl, 'SHOWCASE_EXAMPLES.md');
+                    const rawUrl = 'https://raw.githubusercontent.com/infinition/obsidian-python-ds-studio/main/Showcase_Python_DS_Studio.md';
+                    const saved = await this.plugin.downloadTextFileToVault(rawUrl, 'Showcase_Python_DS_Studio.md');
                     if (saved) {
                         new Notice(t(this.plugin.settings.language, 'download_saved_to').replace('{0}', saved));
                     }
                     btn.setDisabled(false);
-                    btn.setButtonText('Download SHOWCASE_EXAMPLES.md');
+                    btn.setButtonText('Download Showcase_Python_DS_Studio.md');
                 }));
 
         // --- SECTION: UPDATE CHECK ---
@@ -2683,7 +3747,7 @@ except Exception as e:
                 .onClick(async () => {
                     try {
                         const apiUrl = 'https://api.github.com/repos/infinition/obsidian-python-ds-studio/releases/latest';
-                        const headers: Record<string,string> = { 'Accept': 'application/vnd.github.v3+json' };
+                        const headers: Record<string, string> = { 'Accept': 'application/vnd.github.v3+json' };
                         if (this.plugin.settings.githubToken) headers['Authorization'] = `token ${this.plugin.settings.githubToken}`;
                         const res = await fetch(apiUrl, { headers });
                         if (!res.ok) {
