@@ -1,4 +1,4 @@
-import { Plugin, ItemView, WorkspaceLeaf, Notice, setIcon, MarkdownView, Editor, PluginSettingTab, Setting, App, TFile, Modal, TFolder, normalizePath, AbstractInputSuggest, requestUrl } from 'obsidian';
+import { Plugin, ItemView, WorkspaceLeaf, Notice, setIcon, MarkdownView, Editor, PluginSettingTab, Setting, App, TFile, Modal, TFolder, normalizePath, AbstractInputSuggest, requestUrl, Platform } from 'obsidian';
 import { ViewPlugin, Decoration, WidgetType, DecorationSet, ViewUpdate, EditorView } from '@codemirror/view';
 import { RangeSetBuilder, EditorState, Compartment } from '@codemirror/state';
 import { python } from '@codemirror/lang-python';
@@ -1601,6 +1601,13 @@ export default class PyDataPlugin extends Plugin {
 
     async onload() {
         await this.loadSettings();
+
+        // Disable worker on mobile because bridge requires Main Thread access
+        if (Platform.isMobile) {
+            this.useWorker = false;
+            console.log("PyData: Mobile detected, disabling worker for Obsidian Bridge compatibility.");
+        }
+
         this.registerView(VIEW_TYPE_DATA_STUDIO, (leaf) => (this.view = new DataStudioView(leaf, this)));
         this.addRibbonIcon('activity', 'Python Data Studio', () => this.activateView());
         this.addSettingTab(new PyDataSettingTab(this.app, this));
