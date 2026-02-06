@@ -426,6 +426,7 @@ class DataStudioView extends ItemView {
     varContainer: HTMLElement | null = null;
     pipContainer: HTMLElement | null = null;
     listContainer: HTMLElement | null = null;
+    private _cleanupResizer: (() => void) | null = null;
 
     constructor(leaf: WorkspaceLeaf, plugin: PyDataPlugin) {
         super(leaf);
@@ -500,24 +501,31 @@ class DataStudioView extends ItemView {
             e.preventDefault();
         });
 
-        document.addEventListener('mousemove', (e) => {
+        // PERF: Use named handlers so they can be cleaned up on view close
+        const onMouseMove = (e: MouseEvent) => {
             if (!isResizing) return;
             const containerRect = container.getBoundingClientRect();
-            // Calculate new height: Total height - (Mouse Y - Container Top)
-            // But footer is at bottom, so: Container Bottom - Mouse Y
             const newHeight = containerRect.bottom - e.clientY;
-
             if (newHeight > 100 && newHeight < containerRect.height - 100) {
                 footer.style.height = `${newHeight}px`;
             }
-        });
+        };
 
-        document.addEventListener('mouseup', () => {
+        const onMouseUp = () => {
             if (isResizing) {
                 isResizing = false;
                 resizer.removeClass('ds-resizing');
             }
-        });
+        };
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+
+        // Store cleanup refs
+        this._cleanupResizer = () => {
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+        };
 
         const footerHeader = footer.createEl("div", { cls: "ds-footer-header" });
         footerHeader.createEl("span", { text: t(this.plugin.settings.language, "console_title"), cls: "ds-footer-title" });
@@ -585,6 +593,10 @@ class DataStudioView extends ItemView {
     }
 
     async onClose() {
+        if (this._cleanupResizer) {
+            this._cleanupResizer();
+            this._cleanupResizer = null;
+        }
         this.outputContainer = null;
         this.listContainer = null;
     }
@@ -901,8 +913,15 @@ class DataStudioView extends ItemView {
 
     private lastVarsJson: string = '';
     private varTableBody: HTMLElement | null = null;
+    private refreshVarsTimer: ReturnType<typeof setTimeout> | null = null;
 
     async refreshVariables(force = false) {
+        // Debounce: avoid spamming Python execution when multiple blocks run quickly
+        if (this.refreshVarsTimer) clearTimeout(this.refreshVarsTimer);
+        this.refreshVarsTimer = setTimeout(() => this._doRefreshVariables(force), 300);
+    }
+
+    private async _doRefreshVariables(force = false) {
         if (!this.varContainer) return;
 
         // First time: create the structure
@@ -1432,6 +1451,11 @@ print(json.dumps(__pd_get_pkgs()))
 class RunButtonWidget extends WidgetType {
     constructor(private plugin: PyDataPlugin, private code: string, private endLineNum: number) { super(); }
 
+    // PERF: Avoid re-creating DOM if the code block content hasn't changed
+    eq(other: RunButtonWidget): boolean {
+        return this.code === other.code && this.endLineNum === other.endLineNum;
+    }
+
     toDOM(view: EditorView): HTMLElement {
         // Wrapper pour positionnement
         const wrapper = document.createElement("div");
@@ -1571,14 +1595,19 @@ const codeBlockButtonPlugin = (plugin: PyDataPlugin) => ViewPlugin.fromClass(cla
 
     buildDecorations(view: EditorView): DecorationSet {
         const builder = new RangeSetBuilder<Decoration>();
-        for (let i = 1; i <= view.state.doc.lines; i++) {
-            const line = view.state.doc.line(i);
-            if (line.text.trim().startsWith('```python')) {
-                const endLine = this.findEndLine(view.state.doc, i);
-                const code = view.state.doc.sliceString(line.from + 9, view.state.doc.line(endLine).from);
-                builder.add(line.from, line.from, Decoration.widget({
-                    widget: new RunButtonWidget(plugin, code, endLine), side: 1
-                }));
+        // PERF: Only scan visible ranges instead of entire document
+        for (const { from, to } of view.visibleRanges) {
+            const startLine = view.state.doc.lineAt(from).number;
+            const endLine = view.state.doc.lineAt(to).number;
+            for (let i = startLine; i <= endLine; i++) {
+                const line = view.state.doc.line(i);
+                if (line.text.trim().startsWith('```python')) {
+                    const endCodeLine = this.findEndLine(view.state.doc, i);
+                    const code = view.state.doc.sliceString(line.from + 9, view.state.doc.line(endCodeLine).from);
+                    builder.add(line.from, line.from, Decoration.widget({
+                        widget: new RunButtonWidget(plugin, code, endCodeLine), side: 1
+                    }));
+                }
             }
         }
         return builder.finish();
@@ -1849,7 +1878,12 @@ export default class PyDataPlugin extends Plugin {
             });
         });
 
-        this.app.workspace.onLayoutReady(() => this.initPyodide());
+        // PERF: Do NOT auto-init Pyodide at startup — it downloads ~30MB and freezes UI.
+        // Pyodide will be lazily initialized on first executePython() call.
+        // Show a notice so the user knows init will happen on first run.
+        this.app.workspace.onLayoutReady(() => {
+            console.log("PyData: Plugin ready. Pyodide will initialize on first Python execution.");
+        });
 
         this.registerEvent(
             this.app.workspace.on("editor-drop", async (evt: DragEvent, editor: Editor, info: MarkdownView) => {
@@ -2050,7 +2084,10 @@ export default class PyDataPlugin extends Plugin {
     }
 
     async executePython(code: string, wrap = true): Promise<{ text: string, image: string | null, error?: string }> {
-        if (!this.pyodideReady) { await this.initPyodide(true); }
+        if (!this.pyodideReady) {
+            new Notice(t(this.settings.language, "python_loading") || "⏳ Initializing Python environment (first run)...", 5000);
+            await this.initPyodide(true);
+        }
 
         // Use Web Worker for non-blocking UI
         if (this.useWorker && this.workerManager && this.workerManager.isReady()) {
