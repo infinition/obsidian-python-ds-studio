@@ -1,4 +1,4 @@
 Contact: https://github.com/infinition/obsidian-python-ds-studio/issues
-Expires: 2027-02-13T05:22:14.000Z
+Expires: 2027-02-14T05:10:07.000Z
 Preferred-Languages: en, fr
 Policy: https://github.com/infinition/obsidian-python-ds-studio/blob/wiki/SECURITY.md
