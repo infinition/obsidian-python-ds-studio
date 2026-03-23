@@ -1,10 +1,10 @@
 {
   "id": "obsidian-python-ds-studio",
   "name": "Obsidian Python DS Studio",
-  "version": "0.1.0",
+  "version": "1.4.1",
   "minAppVersion": "1.5.0",
   "description": "High-performance Python Data Science environment for Obsidian.",
-  "author": "infinition",
-  "authorUrl": "https://github.com/infinition",
+  "author": "Fabien Polly (Infinition)",
+  "authorUrl": "https://github.com/infinition/obsidian-python-ds-studio",
   "isDesktopOnly": false
 }

@@ -1,6 +1,6 @@
 {
   "name": "obsidian-python-ds-studio",
-  "version": "1.0.0",
+  "version": "1.4.1",
   "description": "Obsidian Data Science Plugin with Pyodide",
   "main": "main.js",
   "scripts": {
@@ -8,7 +8,7 @@
     "build": "node esbuild.config.mjs production"
   },
   "keywords": [],
-  "author": "Infinition",
+  "author": "Fabien Polly (Infinition)",
   "license": "MIT",
   "repository": "https://github.com/infinition/obsidian-python-ds-studio",
   "devDependencies": {
