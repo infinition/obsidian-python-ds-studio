@@ -1,6 +1,6 @@
 {
   "name": "obsidian-python-ds-studio",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Obsidian Data Science Plugin with Pyodide",
   "main": "main.js",
   "scripts": {
