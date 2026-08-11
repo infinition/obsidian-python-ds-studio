@@ -1,4 +1,4 @@
-<img width="256" height="256" alt="Python DS Studio" src="https://github.com/user-attachments/assets/45f788db-571e-4469-9c27-083fe317eb4b" />
+<img width="402" height="401" alt="image-removebg-preview (13)" src="https://github.com/user-attachments/assets/4ee73eec-13a3-492b-86dc-6a4bbd805013" />
 
 # Python DS Studio for Obsidian
 
